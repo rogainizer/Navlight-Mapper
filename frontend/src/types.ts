@@ -1,0 +1,79 @@
+export type SyncStatus = "pending" | "synced" | "failed";
+export type PhotoLocationMode = "current" | "map";
+
+export interface GeoPoint {
+  lat: number;
+  lng: number;
+  accuracy: number;
+}
+
+export interface ImagePoint {
+  x: number;
+  y: number;
+}
+
+export interface ControlPoint {
+  imageX: number;
+  imageY: number;
+  lat: number;
+  lng: number;
+}
+
+export interface CalibrationModel {
+  controlPoints: [ControlPoint, ControlPoint, ControlPoint];
+  coefficients: [number, number, number, number, number, number];
+}
+
+export interface MapRecord {
+  id: string;
+  name: string;
+  blob: Blob;
+  createdAt: string;
+  calibration: CalibrationModel | null;
+}
+
+export interface TrackRecord {
+  id: string;
+  mapId: string;
+  startedAt: string;
+  endedAt: string | null;
+  syncStatus: SyncStatus;
+}
+
+export interface TrackPointRecord {
+  id: string;
+  trackId: string;
+  mapId: string;
+  lat: number;
+  lng: number;
+  accuracy: number;
+  recordedAt: string;
+  syncStatus: SyncStatus;
+}
+
+export interface PhotoRecord {
+  id: string;
+  trackId: string | null;
+  mapId: string;
+  lat: number;
+  lng: number;
+  accuracy: number;
+  capturedAt: string;
+  fileName: string;
+  mimeType: string;
+  blob: Blob;
+  syncStatus: SyncStatus;
+  lastError: string | null;
+}
+
+export interface LivePosition {
+  lat: number;
+  lng: number;
+  accuracy: number;
+  timestamp: number;
+}
+
+export interface PendingCounts {
+  points: number;
+  photos: number;
+}

@@ -1,0 +1,33 @@
+@media (max-width: 600px) {
+  .app-header {
+    padding-bottom: 0.9rem;
+  }
+
+  .header-meta {
+    font-size: 0.82rem;
+  }
+
+  .control-section {
+    gap: 0.55rem;
+  }
+
+  .panel {
+    padding: 0.62rem;
+  }
+
+  button,
+  input,
+  select {
+    min-height: 44px;
+  }
+}
+
+@media (min-width: 1200px) {
+  .app-main {
+    grid-template-columns: minmax(0, 1fr) 420px;
+  }
+
+  .map-section {
+    min-height: 70vh;
+  }
+}
