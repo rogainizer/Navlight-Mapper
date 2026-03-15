@@ -67,3 +67,17 @@ CREATE TABLE IF NOT EXISTS maps (
   UNIQUE KEY uq_maps_local_id (local_id),
   INDEX idx_maps_updated_at (updated_at)
 );
+
+CREATE TABLE IF NOT EXISTS routes (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  local_id VARCHAR(64) NOT NULL,
+  map_local_id VARCHAR(64) NOT NULL,
+  name VARCHAR(120) NOT NULL,
+  color_hex VARCHAR(7) NOT NULL,
+  points_json LONGTEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_routes_local_id (local_id),
+  INDEX idx_routes_map_local_id (map_local_id),
+  INDEX idx_routes_created_at (created_at)
+);

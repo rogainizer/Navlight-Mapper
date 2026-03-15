@@ -41,6 +41,21 @@ export interface ServerMapSummary {
   calibration: CalibrationModel | null;
 }
 
+export interface RoutePoint {
+  lat: number;
+  lng: number;
+}
+
+export interface ServerRoute {
+  id: string;
+  mapId: string;
+  name: string;
+  color: string;
+  points: RoutePoint[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface TrackRecord {
   id: string;
   mapId: string;

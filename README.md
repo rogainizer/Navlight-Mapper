@@ -10,6 +10,7 @@ Offline-first web app for field mapping with GPS, photo capture, and online sync
 - Manual start/stop movement tracking
 - Multiple photo capture tied to current location
 - Queue-based sync to Node/Express API + MySQL
+- Online route creation (name, color, map-selected points)
 - Mobile and large-screen responsive layout
 - Docker image deployment with Docker Compose
 
@@ -74,6 +75,9 @@ Important behavior:
 - The app asks for confirmation before clearing local browser data for a new map load.
 - Existing maps are chosen from the server list while online.
 - Selecting an existing server map also downloads all server photos and photo locations for that map into local browser cache.
+- Route creation is online-only and only available for saved calibrated maps.
+- Route points are selected by tapping the map and are saved to the server with route name and color.
+- Routes can be removed while online from the route list in the Create Route panel.
 - When an existing server map is selected, create/import controls and calibration details for new-map creation are hidden.
 - Server data is not deleted when local browser data is cleared.
 
@@ -81,7 +85,10 @@ Map endpoints:
 - `GET /api/maps`
 - `GET /api/maps/:mapId/image`
 - `GET /api/maps/:mapId/photos`
+- `GET /api/maps/:mapId/routes`
 - `POST /api/maps`
+- `POST /api/maps/:mapId/routes`
+- `DELETE /api/maps/:mapId/routes/:routeId`
 - `PUT /api/maps/:mapId/calibration`
 
 ## Test Map

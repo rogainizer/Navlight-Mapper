@@ -37,6 +37,16 @@ interface MapPhotoRow extends RowDataPacket {
   file_path: string;
 }
 
+interface RouteRow extends RowDataPacket {
+  local_id: string;
+  map_local_id: string;
+  name: string;
+  color_hex: string;
+  points_json: string;
+  created_at: string | Date;
+  updated_at: string | Date;
+}
+
 interface MapNameRow extends RowDataPacket {
   local_id: string;
   name: string;
@@ -62,6 +72,21 @@ interface MapPhotoResponse {
   mimeType: string;
   fileName: string;
   fileUrl: string;
+}
+
+interface MapRoutePoint {
+  lat: number;
+  lng: number;
+}
+
+interface MapRouteResponse {
+  id: string;
+  mapId: string;
+  name: string;
+  color: string;
+  points: MapRoutePoint[];
+  createdAt: string;
+  updatedAt: string;
 }
 
 interface BatchMetadata {
@@ -122,6 +147,75 @@ function parseStoredCalibration(raw: string | null): unknown | null {
   } catch {
     return null;
   }
+}
+
+function normalizeRouteColor(value: string): string {
+  const trimmed = value.trim();
+  if (!/^#[0-9a-fA-F]{6}$/.test(trimmed)) {
+    throw new SyncValidationError("route color must be a hex color like #ff6600.");
+  }
+
+  return trimmed.toLowerCase();
+}
+
+function parseStoredRoutePoints(raw: string): MapRoutePoint[] {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    const points: MapRoutePoint[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") {
+        continue;
+      }
+
+      const point = item as { lat?: unknown; lng?: unknown };
+      const lat = Number(point.lat);
+      const lng = Number(point.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        continue;
+      }
+
+      points.push({ lat, lng });
+    }
+
+    return points;
+  } catch {
+    return [];
+  }
+}
+
+function validateRoutePoints(value: unknown): MapRoutePoint[] {
+  if (!Array.isArray(value) || value.length < 2) {
+    throw new SyncValidationError("route points must contain at least two points.");
+  }
+
+  const points = value.map((item, index) => {
+    if (!item || typeof item !== "object") {
+      throw new SyncValidationError(`route point at index ${index} is invalid.`);
+    }
+
+    const point = item as { lat?: unknown; lng?: unknown };
+    const lat = Number(point.lat);
+    const lng = Number(point.lng);
+
+    if (!Number.isFinite(lat) || lat < -90 || lat > 90) {
+      throw new SyncValidationError(`route point ${index} latitude must be between -90 and 90.`);
+    }
+
+    if (!Number.isFinite(lng) || lng < -180 || lng > 180) {
+      throw new SyncValidationError(`route point ${index} longitude must be between -180 and 180.`);
+    }
+
+    return {
+      lat,
+      lng
+    };
+  });
+
+  return points;
 }
 
 function serializeCalibration(value: unknown, fieldName: string): string | null {
@@ -187,6 +281,18 @@ function toMapPhotoResponse(row: MapPhotoRow): MapPhotoResponse {
     mimeType: row.mime_type,
     fileName: row.file_name,
     fileUrl: buildUploadsFileUrl(row.file_path)
+  };
+}
+
+function toMapRouteResponse(row: RouteRow): MapRouteResponse {
+  return {
+    id: row.local_id,
+    mapId: row.map_local_id,
+    name: row.name,
+    color: row.color_hex,
+    points: parseStoredRoutePoints(row.points_json),
+    createdAt: toIsoString(row.created_at),
+    updatedAt: toIsoString(row.updated_at)
   };
 }
 
@@ -417,6 +523,148 @@ syncRoutes.get("/maps/:mapId/photos", async (request: Request, response: Respons
   );
 
   response.json({ photos: rows.map(toMapPhotoResponse) });
+});
+
+syncRoutes.get("/maps/:mapId/routes", async (request: Request, response: Response) => {
+  const mapId = readParam(request.params.mapId);
+  if (!mapId) {
+    response.status(400).json({ message: "Map id is required." });
+    return;
+  }
+
+  const [rows] = await pool.query<RouteRow[]>(
+    `
+    SELECT local_id, map_local_id, name, color_hex, points_json, created_at, updated_at
+    FROM routes
+    WHERE map_local_id = ?
+    ORDER BY created_at ASC
+    `,
+    [mapId]
+  );
+
+  response.json({ routes: rows.map(toMapRouteResponse) });
+});
+
+syncRoutes.post("/maps/:mapId/routes", async (request: Request, response: Response) => {
+  const mapId = readParam(request.params.mapId);
+  if (!mapId) {
+    response.status(400).json({ message: "Map id is required." });
+    return;
+  }
+
+  try {
+    const body = (request.body || {}) as {
+      name?: unknown;
+      color?: unknown;
+      points?: unknown;
+    };
+
+    const routeName = typeof body.name === "string" ? body.name.trim() : "";
+    if (!routeName) {
+      throw new SyncValidationError("route name is required.");
+    }
+    if (routeName.length > 120) {
+      throw new SyncValidationError("route name must be 120 characters or fewer.");
+    }
+
+    const color = typeof body.color === "string" ? normalizeRouteColor(body.color) : "";
+    if (!color) {
+      throw new SyncValidationError("route color is required.");
+    }
+
+    const points = validateRoutePoints(body.points);
+    const pointsJson = JSON.stringify(points);
+    const routeId = randomUUID();
+
+    const [mapRows] = await pool.query<RowDataPacket[]>(
+      `
+      SELECT local_id
+      FROM maps
+      WHERE local_id = ?
+      LIMIT 1
+      `,
+      [mapId]
+    );
+
+    if (mapRows.length === 0) {
+      response.status(404).json({ message: "Map not found." });
+      return;
+    }
+
+    await pool.execute(
+      `
+      INSERT INTO routes (local_id, map_local_id, name, color_hex, points_json)
+      VALUES (?, ?, ?, ?, ?)
+      `,
+      [routeId, mapId, routeName, color, pointsJson]
+    );
+
+    const [rows] = await pool.query<RouteRow[]>(
+      `
+      SELECT local_id, map_local_id, name, color_hex, points_json, created_at, updated_at
+      FROM routes
+      WHERE local_id = ?
+      LIMIT 1
+      `,
+      [routeId]
+    );
+
+    const saved = rows[0];
+    if (!saved) {
+      response.status(500).json({ message: "Failed to save route." });
+      return;
+    }
+
+    response.status(201).json({ route: toMapRouteResponse(saved) });
+  } catch (error) {
+    if (error instanceof SyncValidationError) {
+      response.status(400).json({ message: error.message });
+      return;
+    }
+
+    const message = error instanceof Error ? error.message : "Failed to save route.";
+    response.status(500).json({ message });
+  }
+});
+
+syncRoutes.delete("/maps/:mapId/routes/:routeId", async (request: Request, response: Response) => {
+  const mapId = readParam(request.params.mapId);
+  const routeId = readParam(request.params.routeId);
+
+  if (!mapId) {
+    response.status(400).json({ message: "Map id is required." });
+    return;
+  }
+
+  if (!routeId) {
+    response.status(400).json({ message: "Route id is required." });
+    return;
+  }
+
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `
+    SELECT local_id
+    FROM routes
+    WHERE local_id = ? AND map_local_id = ?
+    LIMIT 1
+    `,
+    [routeId, mapId]
+  );
+
+  if (rows.length === 0) {
+    response.status(404).json({ message: "Route not found." });
+    return;
+  }
+
+  await pool.execute(
+    `
+    DELETE FROM routes
+    WHERE local_id = ? AND map_local_id = ?
+    `,
+    [routeId, mapId]
+  );
+
+  response.status(204).send();
 });
 
 syncRoutes.post("/maps", mapUpload.single("map"), async (request: Request, response: Response) => {

@@ -1,4 +1,4 @@
-import type { CalibrationModel, ServerMapSummary } from "../types";
+import type { CalibrationModel, RoutePoint, ServerMapSummary, ServerRoute } from "../types";
 
 export interface SyncBatchResponse {
   batchId: string;
@@ -23,6 +23,14 @@ interface ServerMapPhotosResponse {
   photos: ServerMapPhoto[];
 }
 
+interface ServerMapRoutesResponse {
+  routes: ServerRoute[];
+}
+
+interface ServerRouteSingleResponse {
+  route: ServerRoute;
+}
+
 export interface ServerMapPhoto {
   id: string;
   trackId: string | null;
@@ -42,6 +50,12 @@ export interface SaveMapToServerInput {
   mapBlob: Blob;
   fileName?: string;
   calibration?: CalibrationModel | null;
+}
+
+export interface SaveMapRouteToServerInput {
+  name: string;
+  color: string;
+  points: RoutePoint[];
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api";
@@ -125,6 +139,55 @@ export async function listServerMapPhotos(mapId: string): Promise<ServerMapPhoto
 
   const data = (await response.json()) as ServerMapPhotosResponse;
   return data.photos || [];
+}
+
+export async function listServerMapRoutes(mapId: string): Promise<ServerRoute[]> {
+  const response = await fetch(`${API_BASE_URL}/maps/${encodeURIComponent(mapId)}/routes`, {
+    method: "GET"
+  });
+
+  if (!response.ok) {
+    const message = await readErrorMessage(response, "Failed to load map routes.");
+    throw new Error(message);
+  }
+
+  const data = (await response.json()) as ServerMapRoutesResponse;
+  return data.routes || [];
+}
+
+export async function saveMapRouteToServer(
+  mapId: string,
+  payload: SaveMapRouteToServerInput
+): Promise<ServerRoute> {
+  const response = await fetch(`${API_BASE_URL}/maps/${encodeURIComponent(mapId)}/routes`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const message = await readErrorMessage(response, "Failed to save map route.");
+    throw new Error(message);
+  }
+
+  const data = (await response.json()) as ServerRouteSingleResponse;
+  return data.route;
+}
+
+export async function deleteMapRouteFromServer(mapId: string, routeId: string): Promise<void> {
+  const response = await fetch(
+    `${API_BASE_URL}/maps/${encodeURIComponent(mapId)}/routes/${encodeURIComponent(routeId)}`,
+    {
+      method: "DELETE"
+    }
+  );
+
+  if (!response.ok) {
+    const message = await readErrorMessage(response, "Failed to delete map route.");
+    throw new Error(message);
+  }
 }
 
 export async function fetchServerMapPhotoBlob(fileUrl: string): Promise<Blob> {

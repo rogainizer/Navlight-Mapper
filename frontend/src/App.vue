@@ -18,6 +18,9 @@
           :selected-photo-location="photoLocationMode === 'map' ? selectedPhotoLocation : null"
           :points="mapPoints"
           :photos="mapPhotos"
+          :routes="serverRoutes"
+          :route-draft-points="routeDraftPoints"
+          :route-draft-color="routeColor"
           @image-click="onMapClick"
           @photo-marker-click="openPhotoDialog"
         />
@@ -55,6 +58,62 @@
           @update:mode="setPhotoLocationMode"
           @capture="capturePhotos"
         />
+
+        <section class="panel route-panel">
+          <h2>Create Route</h2>
+          <p class="route-help">Name a route, choose a color, then tap map points to draw connected lines.</p>
+
+          <p class="sync-state" v-if="!online">Route creation is only available while online.</p>
+          <p class="sync-state" v-else-if="!activeMapId">Select a map to create routes.</p>
+          <p class="sync-state" v-else-if="isDraftActiveMap">Save map calibration before creating routes.</p>
+          <p class="sync-state" v-else-if="!activeMap?.calibration">Calibrate this map before creating routes.</p>
+
+          <template v-else>
+            <label class="route-label">
+              Route Name
+              <input v-model="routeName" type="text" maxlength="120" placeholder="Leg 1" :disabled="!routeCreateEnabled" />
+            </label>
+
+            <label class="route-label color">
+              Route Color
+              <input v-model="routeColor" type="color" :disabled="!routeCreateEnabled" />
+            </label>
+
+            <div class="route-actions" v-if="!routeCreateEnabled">
+              <button type="button" @click="startRouteSelection">Start Route</button>
+            </div>
+
+            <div class="route-actions" v-else>
+              <button type="button" class="secondary" @click="clearRoutePoints" :disabled="routeDraftPoints.length === 0">
+                Clear Points
+              </button>
+              <button type="button" class="secondary" @click="cancelRouteSelection">Cancel</button>
+              <button type="button" @click="saveRoute" :disabled="!canSaveRoute || savingRoute">
+                {{ savingRoute ? "Saving..." : "Save Route" }}
+              </button>
+            </div>
+
+            <p class="sync-state" v-if="routeCreateEnabled">
+              Tap the map to add route points. Points selected: {{ routeDraftPoints.length }}
+            </p>
+
+            <ul class="route-list" v-if="serverRoutes.length > 0">
+              <li v-for="route in serverRoutes" :key="route.id">
+                <span class="route-color-dot" :style="{ backgroundColor: route.color }"></span>
+                <span>{{ route.name }}</span>
+                <small>{{ route.points.length }} pts</small>
+                <button
+                  type="button"
+                  class="route-delete"
+                  :disabled="!online || deletingRouteId === route.id"
+                  @click="removeRoute(route)"
+                >
+                  {{ deletingRouteId === route.id ? "Removing..." : "Remove" }}
+                </button>
+              </li>
+            </ul>
+          </template>
+        </section>
 
         <section class="panel sync-panel">
           <h2>Sync Queue</h2>
@@ -149,11 +208,14 @@ import {
 } from "./services/db";
 import { startLocationWatch } from "./services/geolocation";
 import {
+  deleteMapRouteFromServer,
   fetchMapBlobFromUrl,
   fetchServerMapImage,
   fetchServerMapPhotoBlob,
+  listServerMapRoutes,
   listServerMaps,
   listServerMapPhotos,
+  saveMapRouteToServer,
   saveMapCalibrationToServer,
   saveMapToServer
 } from "./services/api";
@@ -167,7 +229,9 @@ import type {
   PendingCounts,
   PhotoLocationMode,
   PhotoRecord,
+  RoutePoint,
   ServerMapSummary,
+  ServerRoute,
   TrackPointRecord,
   TrackRecord
 } from "./types";
@@ -192,6 +256,7 @@ const creatingNewMap = ref(false);
 const activeMapId = ref<string | null>(localStorage.getItem(ACTIVE_MAP_KEY));
 const mapPoints = ref<TrackPointRecord[]>([]);
 const mapPhotos = ref<PhotoRecord[]>([]);
+const serverRoutes = ref<ServerRoute[]>([]);
 const currentPosition = ref<LivePosition | null>(null);
 const tracking = ref(false);
 const activeTrackId = ref<string | null>(null);
@@ -207,6 +272,12 @@ const photoDialogVisible = ref(false);
 const photoDialogItems = ref<PhotoDialogItem[]>([]);
 const selectedDialogPhotoId = ref<string | null>(null);
 const deletingPhoto = ref(false);
+const routeName = ref("");
+const routeColor = ref("#ff7f11");
+const routeDraftPoints = ref<RoutePoint[]>([]);
+const routeCreateEnabled = ref(false);
+const savingRoute = ref(false);
+const deletingRouteId = ref<string | null>(null);
 
 let lastRecordedPointMs = 0;
 let stopLocationWatch: (() => void) | null = null;
@@ -223,6 +294,18 @@ const canStartTracking = computed(
   () => Boolean(activeMap.value) && !isDraftActiveMap.value && Boolean(currentPosition.value) && !tracking.value
 );
 const canUseMapPhotoSelection = computed(() => Boolean(activeMap.value?.calibration) && !isDraftActiveMap.value);
+const canCreateRouteOnCurrentMap = computed(
+  () => Boolean(online.value && activeMapId.value && activeMap.value?.calibration && !isDraftActiveMap.value)
+);
+const canSaveRoute = computed(
+  () =>
+    Boolean(
+      canCreateRouteOnCurrentMap.value &&
+        routeCreateEnabled.value &&
+        routeName.value.trim().length > 0 &&
+        routeDraftPoints.value.length >= 2
+    )
+);
 const selectedDialogPhoto = computed(() => {
   const selectedId = selectedDialogPhotoId.value;
   if (!selectedId) {
@@ -353,6 +436,101 @@ function getServerMapSummary(mapId: string): ServerMapSummary | null {
   return serverMaps.value.find((map) => map.id === mapId) || null;
 }
 
+function resetRouteDraft(clearName = false): void {
+  routeCreateEnabled.value = false;
+  routeDraftPoints.value = [];
+  savingRoute.value = false;
+  if (clearName) {
+    routeName.value = "";
+  }
+}
+
+async function refreshServerRoutesForActiveMap(): Promise<void> {
+  if (!online.value || !activeMapId.value || isDraftActiveMap.value) {
+    serverRoutes.value = [];
+    return;
+  }
+
+  serverRoutes.value = await listServerMapRoutes(activeMapId.value);
+}
+
+function startRouteSelection(): void {
+  if (!canCreateRouteOnCurrentMap.value) {
+    statusMessage.value = "Routes can only be created online on a saved calibrated map.";
+    return;
+  }
+
+  routeCreateEnabled.value = true;
+  routeDraftPoints.value = [];
+  statusMessage.value = "Route creation started. Tap the map to add route points.";
+}
+
+function cancelRouteSelection(): void {
+  if (!routeCreateEnabled.value) {
+    return;
+  }
+
+  resetRouteDraft(false);
+  statusMessage.value = "Route creation canceled.";
+}
+
+function clearRoutePoints(): void {
+  routeDraftPoints.value = [];
+  statusMessage.value = "Route points cleared.";
+}
+
+async function saveRoute(): Promise<void> {
+  if (!activeMapId.value) {
+    statusMessage.value = "Select a map before saving a route.";
+    return;
+  }
+
+  if (!canSaveRoute.value) {
+    statusMessage.value = "Route name and at least two route points are required.";
+    return;
+  }
+
+  savingRoute.value = true;
+  try {
+    await saveMapRouteToServer(activeMapId.value, {
+      name: routeName.value.trim(),
+      color: routeColor.value,
+      points: routeDraftPoints.value.map((point) => ({ lat: point.lat, lng: point.lng }))
+    });
+
+    await refreshServerRoutesForActiveMap();
+    resetRouteDraft(true);
+    statusMessage.value = "Route saved to server.";
+  } catch (error) {
+    statusMessage.value = error instanceof Error ? error.message : "Failed to save route.";
+  } finally {
+    savingRoute.value = false;
+  }
+}
+
+async function removeRoute(route: ServerRoute): Promise<void> {
+  if (!online.value || !activeMapId.value) {
+    statusMessage.value = "Route removal is only available while online.";
+    return;
+  }
+
+  const confirmed = window.confirm(`Delete route "${route.name}"?`);
+  if (!confirmed) {
+    return;
+  }
+
+  deletingRouteId.value = route.id;
+  try {
+    await deleteMapRouteFromServer(activeMapId.value, route.id);
+    await refreshServerRoutesForActiveMap();
+    statusMessage.value = "Route deleted.";
+  } catch (error) {
+    statusMessage.value = error instanceof Error ? error.message : "Failed to delete route.";
+  } finally {
+    deletingRouteId.value = null;
+  }
+}
+
 async function cacheMapOffline(mapSummary: ServerMapSummary, blob: Blob): Promise<void> {
   clearDraftMap();
 
@@ -452,6 +630,30 @@ async function refreshPending(): Promise<void> {
 
 function onMapClick(point: ImagePoint): void {
   lastImageClick.value = point;
+
+  if (routeCreateEnabled.value) {
+    if (!online.value) {
+      statusMessage.value = "Go online to continue route creation.";
+      return;
+    }
+
+    if (!activeMap.value?.calibration) {
+      statusMessage.value = "Calibrate the map before selecting route points.";
+      return;
+    }
+
+    try {
+      const geoPoint = imageToGeoPoint(activeMap.value.calibration, point.x, point.y);
+      routeDraftPoints.value.push({
+        lat: geoPoint.lat,
+        lng: geoPoint.lng
+      });
+      statusMessage.value = `Route point ${routeDraftPoints.value.length} added.`;
+    } catch (error) {
+      statusMessage.value = error instanceof Error ? error.message : "Unable to add route point.";
+    }
+    return;
+  }
 
   if (photoLocationMode.value !== "map") {
     return;
@@ -591,6 +793,8 @@ function startCreateNewMap(): void {
     return;
   }
 
+  resetRouteDraft(true);
+  serverRoutes.value = [];
   creatingNewMap.value = true;
   closePhotoDialog();
   clearDraftMap();
@@ -612,6 +816,7 @@ async function selectMap(mapId: string): Promise<void> {
   }
 
   try {
+    resetRouteDraft(true);
     creatingNewMap.value = false;
     if (!getServerMapSummary(mapId)) {
       await refreshServerMaps();
@@ -728,6 +933,7 @@ async function saveCalibration(points: [ControlPoint, ControlPoint, ControlPoint
 
       await cacheMapOffline(saved, draftMap.value.blob);
       await refreshServerMaps();
+      await refreshServerRoutesForActiveMap();
       creatingNewMap.value = false;
       statusMessage.value = "Map and calibration saved to server and offline cache.";
       return;
@@ -919,7 +1125,7 @@ function setOnlineState(value: boolean): void {
 function handleOnline(): void {
   setOnlineState(true);
   refreshServerMaps()
-    .then(() => syncActiveCalibrationIfNeeded())
+    .then(() => Promise.all([syncActiveCalibrationIfNeeded(), refreshServerRoutesForActiveMap()]))
     .catch((error) => {
       statusMessage.value = error instanceof Error ? error.message : "Failed to refresh server maps.";
     });
@@ -927,20 +1133,32 @@ function handleOnline(): void {
 
 function handleOffline(): void {
   setOnlineState(false);
+  resetRouteDraft(false);
+  serverRoutes.value = [];
 }
 
 watch(activeMapId, () => {
+  resetRouteDraft(true);
   closePhotoDialog();
   selectedPhotoLocation.value = null;
   refreshMapData().catch((error) => {
     statusMessage.value = error instanceof Error ? error.message : "Failed to load map data.";
+  });
+
+  if (!online.value) {
+    serverRoutes.value = [];
+    return;
+  }
+
+  refreshServerRoutesForActiveMap().catch((error) => {
+    statusMessage.value = error instanceof Error ? error.message : "Failed to load routes for selected map.";
   });
 });
 
 onMounted(async () => {
   await refreshOfflineMaps();
   if (online.value) {
-    await refreshServerMaps();
+    await Promise.all([refreshServerMaps(), refreshServerRoutesForActiveMap()]);
   }
   await Promise.all([refreshMapData(), refreshPending()]);
 
@@ -968,3 +1186,113 @@ onBeforeUnmount(() => {
   window.removeEventListener("keydown", handleWindowKeydown);
 });
 </script>
+
+<style scoped>
+.route-panel {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.route-panel h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.route-help {
+  margin: 0;
+  color: #4d6575;
+  font-size: 0.9rem;
+}
+
+.route-label {
+  display: grid;
+  gap: 0.25rem;
+  color: #334b59;
+  font-size: 0.87rem;
+}
+
+.route-label input[type="text"] {
+  border-radius: 8px;
+  border: 1px solid #bac8d1;
+  padding: 0.5rem 0.6rem;
+}
+
+.route-label.color {
+  max-width: 10rem;
+}
+
+.route-label input[type="color"] {
+  border-radius: 8px;
+  border: 1px solid #bac8d1;
+  width: 3rem;
+  height: 2rem;
+  padding: 0.15rem;
+  background: #ffffff;
+}
+
+.route-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.route-actions button {
+  border: none;
+  border-radius: 8px;
+  background: #124559;
+  color: #ffffff;
+  padding: 0.5rem 0.8rem;
+  font-weight: 700;
+}
+
+.route-actions button.secondary {
+  background: #4b6575;
+}
+
+.route-actions button:disabled {
+  opacity: 0.55;
+}
+
+.route-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.route-list li {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.84rem;
+  color: #334b59;
+}
+
+.route-color-dot {
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+}
+
+.route-list small {
+  color: #6e8390;
+  font-size: 0.76rem;
+}
+
+.route-delete {
+  border: none;
+  border-radius: 7px;
+  background: #b63a2d;
+  color: #ffffff;
+  padding: 0.32rem 0.62rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.route-delete:disabled {
+  opacity: 0.55;
+}
+</style>

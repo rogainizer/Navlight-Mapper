@@ -83,6 +83,8 @@ import type {
   ImagePoint,
   LivePosition,
   PhotoRecord,
+  RoutePoint,
+  ServerRoute,
   TrackPointRecord
 } from "../types";
 
@@ -93,6 +95,9 @@ const props = defineProps<{
   selectedPhotoLocation: GeoPoint | null;
   points: TrackPointRecord[];
   photos: PhotoRecord[];
+  routes: ServerRoute[];
+  routeDraftPoints: RoutePoint[];
+  routeDraftColor: string;
 }>();
 
 const emit = defineEmits<{
@@ -236,6 +241,12 @@ function toCanvasPoint(lat: number, lng: number): ImagePoint | null {
   return { x, y };
 }
 
+function toCanvasRoutePoints(routePoints: RoutePoint[]): ImagePoint[] {
+  return routePoints
+    .map((point) => toCanvasPoint(point.lat, point.lng))
+    .filter((point): point is ImagePoint => point !== null);
+}
+
 function getCanvasPointFromPointer(event: PointerEvent): ImagePoint | null {
   if (!canvasRef.value) {
     return null;
@@ -368,6 +379,8 @@ function drawOverlay(): void {
   if (pointCoordinates.length > 1) {
     context.strokeStyle = "#2a9d8f";
     context.lineWidth = 3;
+    context.lineJoin = "round";
+    context.lineCap = "round";
     context.beginPath();
     pointCoordinates.forEach((point, index) => {
       if (index === 0) {
@@ -377,6 +390,62 @@ function drawOverlay(): void {
       }
     });
     context.stroke();
+  }
+
+  props.routes.forEach((route) => {
+    const routePoints = toCanvasRoutePoints(route.points);
+    if (routePoints.length < 2) {
+      return;
+    }
+
+    context.strokeStyle = route.color;
+    context.lineWidth = 4;
+    context.lineJoin = "round";
+    context.lineCap = "round";
+    context.beginPath();
+    routePoints.forEach((point, index) => {
+      if (index === 0) {
+        context.moveTo(point.x, point.y);
+      } else {
+        context.lineTo(point.x, point.y);
+      }
+    });
+    context.stroke();
+
+    const first = routePoints[0];
+    context.fillStyle = "rgba(18, 39, 52, 0.85)";
+    context.font = "12px sans-serif";
+    context.fillText(route.name, first.x + 8, first.y - 8);
+  });
+
+  const draftRoutePoints = toCanvasRoutePoints(props.routeDraftPoints);
+  if (draftRoutePoints.length > 0) {
+    context.strokeStyle = props.routeDraftColor;
+    context.lineWidth = 3;
+    context.lineJoin = "round";
+    context.lineCap = "round";
+    context.setLineDash([8, 5]);
+
+    if (draftRoutePoints.length > 1) {
+      context.beginPath();
+      draftRoutePoints.forEach((point, index) => {
+        if (index === 0) {
+          context.moveTo(point.x, point.y);
+        } else {
+          context.lineTo(point.x, point.y);
+        }
+      });
+      context.stroke();
+    }
+
+    context.setLineDash([]);
+
+    context.fillStyle = props.routeDraftColor;
+    draftRoutePoints.forEach((point) => {
+      context.beginPath();
+      context.arc(point.x, point.y, 5, 0, Math.PI * 2);
+      context.fill();
+    });
   }
 
   context.fillStyle = "#ef476f";
@@ -534,7 +603,16 @@ watch(
 );
 
 watch(
-  () => [props.calibration, props.currentPosition, props.selectedPhotoLocation, props.points, props.photos],
+  () => [
+    props.calibration,
+    props.currentPosition,
+    props.selectedPhotoLocation,
+    props.points,
+    props.photos,
+    props.routes,
+    props.routeDraftPoints,
+    props.routeDraftColor
+  ],
   () => {
     drawOverlay();
   },
