@@ -1,5 +1,5 @@
 import {
-  listPendingPhotos,
+  listPendingPhotosForMap,
   listPendingPoints,
   markPhotosFailed,
   markPhotosSynced,
@@ -23,8 +23,11 @@ function extensionForMimeType(mimeType: string): string {
   return "jpg";
 }
 
-export async function syncPendingRecords(clientId: string): Promise<SyncOutcome> {
-  const [pendingPoints, pendingPhotos] = await Promise.all([listPendingPoints(), listPendingPhotos()]);
+export async function syncPendingRecords(clientId: string, activeMapId: string | null): Promise<SyncOutcome> {
+  const [pendingPoints, pendingPhotos] = await Promise.all([
+    listPendingPoints(),
+    activeMapId ? listPendingPhotosForMap(activeMapId) : Promise.resolve([])
+  ]);
 
   if (pendingPoints.length === 0 && pendingPhotos.length === 0) {
     return { syncedPoints: 0, syncedPhotos: 0, failedPhotos: 0 };

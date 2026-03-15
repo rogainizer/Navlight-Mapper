@@ -54,3 +54,16 @@ CREATE TABLE IF NOT EXISTS photos (
   INDEX idx_photos_map_local_id (map_local_id),
   INDEX idx_photos_captured_at (captured_at)
 );
+
+CREATE TABLE IF NOT EXISTS maps (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  local_id VARCHAR(64) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  mime_type VARCHAR(120) NOT NULL,
+  image_blob LONGBLOB NOT NULL,
+  calibration_json LONGTEXT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_maps_local_id (local_id),
+  INDEX idx_maps_updated_at (updated_at)
+);

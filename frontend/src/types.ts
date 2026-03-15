@@ -32,6 +32,15 @@ export interface MapRecord {
   calibration: CalibrationModel | null;
 }
 
+export interface ServerMapSummary {
+  id: string;
+  name: string;
+  mimeType: string;
+  createdAt: string;
+  updatedAt: string;
+  calibration: CalibrationModel | null;
+}
+
 export interface TrackRecord {
   id: string;
   mapId: string;

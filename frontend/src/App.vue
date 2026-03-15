@@ -25,15 +25,19 @@
 
       <aside class="control-section">
         <MapManagerPanel
-          :maps="maps"
+          :server-maps="serverMaps"
           :active-map-id="activeMapId"
+          :offline-map-name="activeMap?.name ?? null"
+          :creating-new-map="creatingNewMap"
           :online="online"
+          @start-create-map="startCreateNewMap"
           @select-map="selectMap"
           @save-map-file="saveMapFromFile"
           @download-map-url="saveMapFromUrl"
         />
 
         <CalibrationPanel
+          v-if="creatingNewMap"
           :last-image-click="lastImageClick"
           :saved-calibration="activeMap?.calibration ?? null"
           :disabled="!activeMap"
@@ -129,12 +133,14 @@ import TrackingControls from "./components/TrackingControls.vue";
 import { buildCalibration, imageToGeoPoint } from "./services/calibration";
 import { optimizePhotoForStorage } from "./services/photoProcessing";
 import {
+  clearLocalMapSessionData,
   completeTrack,
   deletePhoto,
   getPendingCounts,
   listMaps,
   listPhotosByMap,
   listPointsByMap,
+  replacePhotosForMap,
   saveMap,
   savePhoto,
   savePoint,
@@ -142,7 +148,15 @@ import {
   updateMapCalibration
 } from "./services/db";
 import { startLocationWatch } from "./services/geolocation";
-import { fetchMapBlobFromUrl } from "./services/api";
+import {
+  fetchMapBlobFromUrl,
+  fetchServerMapImage,
+  fetchServerMapPhotoBlob,
+  listServerMaps,
+  listServerMapPhotos,
+  saveMapCalibrationToServer,
+  saveMapToServer
+} from "./services/api";
 import { syncPendingRecords } from "./services/sync";
 import type {
   ControlPoint,
@@ -153,6 +167,7 @@ import type {
   PendingCounts,
   PhotoLocationMode,
   PhotoRecord,
+  ServerMapSummary,
   TrackPointRecord,
   TrackRecord
 } from "./types";
@@ -170,7 +185,10 @@ type PhotoDialogItem = {
   url: string;
 };
 
-const maps = ref<MapRecord[]>([]);
+const offlineMaps = ref<MapRecord[]>([]);
+const serverMaps = ref<ServerMapSummary[]>([]);
+const draftMap = ref<MapRecord | null>(null);
+const creatingNewMap = ref(false);
 const activeMapId = ref<string | null>(localStorage.getItem(ACTIVE_MAP_KEY));
 const mapPoints = ref<TrackPointRecord[]>([]);
 const mapPhotos = ref<PhotoRecord[]>([]);
@@ -193,9 +211,18 @@ const deletingPhoto = ref(false);
 let lastRecordedPointMs = 0;
 let stopLocationWatch: (() => void) | null = null;
 
-const activeMap = computed(() => maps.value.find((map) => map.id === activeMapId.value) || null);
-const canStartTracking = computed(() => Boolean(activeMap.value) && Boolean(currentPosition.value) && !tracking.value);
-const canUseMapPhotoSelection = computed(() => Boolean(activeMap.value?.calibration));
+const activeMap = computed(() => {
+  if (draftMap.value && activeMapId.value === draftMap.value.id) {
+    return draftMap.value;
+  }
+
+  return offlineMaps.value.find((map) => map.id === activeMapId.value) || null;
+});
+const isDraftActiveMap = computed(() => Boolean(draftMap.value && activeMapId.value === draftMap.value.id));
+const canStartTracking = computed(
+  () => Boolean(activeMap.value) && !isDraftActiveMap.value && Boolean(currentPosition.value) && !tracking.value
+);
+const canUseMapPhotoSelection = computed(() => Boolean(activeMap.value?.calibration) && !isDraftActiveMap.value);
 const selectedDialogPhoto = computed(() => {
   const selectedId = selectedDialogPhotoId.value;
   if (!selectedId) {
@@ -209,6 +236,9 @@ const canCapturePhoto = computed(() => {
   if (!activeMap.value) {
     return false;
   }
+  if (isDraftActiveMap.value) {
+    return false;
+  }
   if (photoLocationMode.value === "current") {
     return Boolean(currentPosition.value);
   }
@@ -218,6 +248,9 @@ const canCapturePhoto = computed(() => {
 const captureDisabledReason = computed(() => {
   if (!activeMap.value) {
     return "Select a map first.";
+  }
+  if (isDraftActiveMap.value) {
+    return "Save calibration to persist this map before tracking or photo capture.";
   }
   if (photoLocationMode.value === "current" && !currentPosition.value) {
     return "Wait for GPS location before capturing photos.";
@@ -243,12 +276,158 @@ function getOrCreateClientId(): string {
   return generated;
 }
 
-async function refreshMaps(): Promise<void> {
-  maps.value = await listMaps();
-  if (!activeMapId.value && maps.value.length > 0) {
-    activeMapId.value = maps.value[0].id;
-    localStorage.setItem(ACTIVE_MAP_KEY, activeMapId.value);
+function setActiveMapId(mapId: string | null): void {
+  activeMapId.value = mapId;
+  if (mapId) {
+    localStorage.setItem(ACTIVE_MAP_KEY, mapId);
+    return;
   }
+
+  localStorage.removeItem(ACTIVE_MAP_KEY);
+}
+
+function setDraftMap(map: MapRecord): void {
+  draftMap.value = map;
+  setActiveMapId(map.id);
+}
+
+function clearDraftMap(): void {
+  draftMap.value = null;
+}
+
+function confirmLocalDataResetForNewMap(): boolean {
+  return window.confirm(
+    "Loading a new map will clear local browser data (offline map, calibration, tracks, points, and photos). Server data will not be deleted. Continue?"
+  );
+}
+
+async function clearLocalBrowserDataForNewMap(): Promise<void> {
+  closePhotoDialog();
+  clearDraftMap();
+
+  tracking.value = false;
+  activeTrackId.value = null;
+  lastRecordedPointMs = 0;
+  selectedPhotoLocation.value = null;
+  lastImageClick.value = null;
+
+  await clearLocalMapSessionData();
+
+  mapPoints.value = [];
+  mapPhotos.value = [];
+  await Promise.all([refreshOfflineMaps(), refreshPending()]);
+}
+
+async function refreshOfflineMaps(): Promise<void> {
+  offlineMaps.value = await listMaps();
+
+  if (offlineMaps.value.length === 0) {
+    if (draftMap.value) {
+      setActiveMapId(draftMap.value.id);
+      return;
+    }
+
+    setActiveMapId(null);
+    return;
+  }
+
+  const hasActiveMap = activeMapId.value
+    ? offlineMaps.value.some((map) => map.id === activeMapId.value) ||
+      (draftMap.value !== null && draftMap.value.id === activeMapId.value)
+    : false;
+
+  if (!hasActiveMap) {
+    setActiveMapId(offlineMaps.value[0].id);
+  }
+}
+
+async function refreshServerMaps(): Promise<void> {
+  if (!online.value) {
+    return;
+  }
+
+  serverMaps.value = await listServerMaps();
+}
+
+function getServerMapSummary(mapId: string): ServerMapSummary | null {
+  return serverMaps.value.find((map) => map.id === mapId) || null;
+}
+
+async function cacheMapOffline(mapSummary: ServerMapSummary, blob: Blob): Promise<void> {
+  clearDraftMap();
+
+  const offlineMap: MapRecord = {
+    id: mapSummary.id,
+    name: mapSummary.name,
+    blob,
+    createdAt: mapSummary.createdAt || new Date().toISOString(),
+    calibration: mapSummary.calibration
+  };
+
+  await saveMap(offlineMap);
+  await refreshOfflineMaps();
+  setActiveMapId(offlineMap.id);
+}
+
+async function downloadServerMapPhotos(mapId: string): Promise<PhotoRecord[]> {
+  const serverPhotos = await listServerMapPhotos(mapId);
+  const downloaded: PhotoRecord[] = [];
+
+  for (const serverPhoto of serverPhotos) {
+    const blob = await fetchServerMapPhotoBlob(serverPhoto.fileUrl);
+    downloaded.push({
+      id: serverPhoto.id,
+      trackId: serverPhoto.trackId,
+      mapId: serverPhoto.mapId,
+      lat: serverPhoto.lat,
+      lng: serverPhoto.lng,
+      accuracy: serverPhoto.accuracy,
+      capturedAt: serverPhoto.capturedAt,
+      fileName: serverPhoto.fileName,
+      mimeType: serverPhoto.mimeType,
+      blob,
+      syncStatus: "synced",
+      lastError: null
+    });
+  }
+
+  return downloaded;
+}
+
+async function loadServerMapAsOffline(mapId: string): Promise<number> {
+  const mapSummary = getServerMapSummary(mapId);
+  if (!mapSummary) {
+    throw new Error("Map not found in server list.");
+  }
+
+  const [blob, downloadedPhotos] = await Promise.all([
+    fetchServerMapImage(mapId),
+    downloadServerMapPhotos(mapId)
+  ]);
+
+  await cacheMapOffline(mapSummary, blob);
+  await replacePhotosForMap(mapId, downloadedPhotos);
+  await Promise.all([refreshMapData(), refreshPending()]);
+
+  return downloadedPhotos.length;
+}
+
+async function syncActiveCalibrationIfNeeded(): Promise<void> {
+  if (isDraftActiveMap.value) {
+    return;
+  }
+
+  const map = activeMap.value;
+  if (!online.value || !map?.calibration) {
+    return;
+  }
+
+  if (!getServerMapSummary(map.id)) {
+    return;
+  }
+
+  await saveMapCalibrationToServer(map.id, map.calibration);
+  await refreshServerMaps();
 }
 
 async function refreshMapData(): Promise<void> {
@@ -406,36 +585,104 @@ function setPhotoLocationMode(mode: PhotoLocationMode): void {
   statusMessage.value = "Tap the map to choose photo location.";
 }
 
-function selectMap(mapId: string): void {
-  activeMapId.value = mapId;
-  localStorage.setItem(ACTIVE_MAP_KEY, mapId);
+function startCreateNewMap(): void {
+  if (!online.value) {
+    statusMessage.value = "Go online to create a new map.";
+    return;
+  }
+
+  creatingNewMap.value = true;
+  closePhotoDialog();
+  clearDraftMap();
+  setActiveMapId(null);
+  mapPoints.value = [];
+  mapPhotos.value = [];
+  selectedPhotoLocation.value = null;
+  lastImageClick.value = null;
+  tracking.value = false;
+  activeTrackId.value = null;
+  lastRecordedPointMs = 0;
+  statusMessage.value = "Create new map selected. Enter map name, load map file or URL, then calibrate and save.";
+}
+
+async function selectMap(mapId: string): Promise<void> {
+  if (!online.value) {
+    statusMessage.value = "Go online to load a map from the server list.";
+    return;
+  }
+
+  try {
+    creatingNewMap.value = false;
+    if (!getServerMapSummary(mapId)) {
+      await refreshServerMaps();
+    }
+    clearDraftMap();
+    const downloadedPhotoCount = await loadServerMapAsOffline(mapId);
+    const selected = getServerMapSummary(mapId);
+    statusMessage.value = selected
+      ? `Loaded offline map: ${selected.name}. Downloaded ${downloadedPhotoCount} photo(s) from server.`
+      : `Loaded selected map for offline use. Downloaded ${downloadedPhotoCount} photo(s) from server.`;
+  } catch (error) {
+    statusMessage.value = error instanceof Error ? error.message : "Failed to load selected map.";
+  }
 }
 
 async function saveMapFromFile(payload: { name: string; file: File }): Promise<void> {
-  const map: MapRecord = {
-    id: crypto.randomUUID(),
-    name: payload.name,
-    blob: payload.file,
-    createdAt: new Date().toISOString(),
-    calibration: null
-  };
+  if (!online.value) {
+    statusMessage.value = "Go online to load and save maps.";
+    return;
+  }
 
-  await saveMap(map);
-  statusMessage.value = `Saved map: ${map.name}`;
-  await refreshMaps();
-  activeMapId.value = map.id;
-  localStorage.setItem(ACTIVE_MAP_KEY, map.id);
+  if (!creatingNewMap.value) {
+    statusMessage.value = "Choose Create new map before loading a new map file.";
+    return;
+  }
+
+  if (!confirmLocalDataResetForNewMap()) {
+    statusMessage.value = "Map load canceled.";
+    return;
+  }
+
+  try {
+    await clearLocalBrowserDataForNewMap();
+
+    const draft: MapRecord = {
+      id: crypto.randomUUID(),
+      name: payload.name,
+      blob: payload.file,
+      createdAt: new Date().toISOString(),
+      calibration: null
+    };
+
+    setDraftMap(draft);
+    creatingNewMap.value = true;
+    statusMessage.value = `Map loaded for calibration: ${draft.name}. Local tracks/photos/calibration were cleared.`;
+  } catch (error) {
+    statusMessage.value = error instanceof Error ? error.message : "Map save failed.";
+  }
 }
 
 async function saveMapFromUrl(payload: { name: string; url: string }): Promise<void> {
   if (!online.value) {
-    statusMessage.value = "Cannot download map while offline.";
+    statusMessage.value = "Go online to download and save maps.";
+    return;
+  }
+
+  if (!creatingNewMap.value) {
+    statusMessage.value = "Choose Create new map before downloading a new map.";
+    return;
+  }
+
+  if (!confirmLocalDataResetForNewMap()) {
+    statusMessage.value = "Map download canceled.";
     return;
   }
 
   try {
     const blob = await fetchMapBlobFromUrl(payload.url);
-    const map: MapRecord = {
+    await clearLocalBrowserDataForNewMap();
+
+    const draft: MapRecord = {
       id: crypto.randomUUID(),
       name: payload.name,
       blob,
@@ -443,11 +690,9 @@ async function saveMapFromUrl(payload: { name: string; url: string }): Promise<v
       calibration: null
     };
 
-    await saveMap(map);
-    statusMessage.value = `Downloaded map: ${map.name}`;
-    await refreshMaps();
-    activeMapId.value = map.id;
-    localStorage.setItem(ACTIVE_MAP_KEY, map.id);
+    setDraftMap(draft);
+    creatingNewMap.value = true;
+    statusMessage.value = `Map downloaded for calibration: ${draft.name}. Local tracks/photos/calibration were cleared.`;
   } catch (error) {
     statusMessage.value = error instanceof Error ? error.message : "Map download failed.";
   }
@@ -461,9 +706,44 @@ async function saveCalibration(points: [ControlPoint, ControlPoint, ControlPoint
 
   try {
     const calibration = buildCalibration(points);
+
+    if (isDraftActiveMap.value && draftMap.value) {
+      draftMap.value = {
+        ...draftMap.value,
+        calibration
+      };
+
+      if (!online.value) {
+        statusMessage.value = "Go online and save calibration to persist this map.";
+        return;
+      }
+
+      const saved = await saveMapToServer({
+        mapId: draftMap.value.id,
+        name: draftMap.value.name,
+        mapBlob: draftMap.value.blob,
+        fileName: `${draftMap.value.name}.jpg`,
+        calibration
+      });
+
+      await cacheMapOffline(saved, draftMap.value.blob);
+      await refreshServerMaps();
+      creatingNewMap.value = false;
+      statusMessage.value = "Map and calibration saved to server and offline cache.";
+      return;
+    }
+
     await updateMapCalibration(activeMapId.value, calibration);
-    statusMessage.value = "Calibration saved.";
-    await refreshMaps();
+
+    if (online.value) {
+      await saveMapCalibrationToServer(activeMapId.value, calibration);
+      await refreshServerMaps();
+      statusMessage.value = "Calibration saved locally and on server.";
+    } else {
+      statusMessage.value = "Calibration saved offline. Go online and save again to update server.";
+    }
+
+    await refreshOfflineMaps();
   } catch (error) {
     statusMessage.value = error instanceof Error ? error.message : "Calibration failed.";
   }
@@ -472,6 +752,11 @@ async function saveCalibration(points: [ControlPoint, ControlPoint, ControlPoint
 async function startTracking(): Promise<void> {
   if (!activeMapId.value || !currentPosition.value) {
     statusMessage.value = "Map and GPS location are required to start tracking.";
+    return;
+  }
+
+  if (isDraftActiveMap.value) {
+    statusMessage.value = "Save calibration to persist this map before tracking.";
     return;
   }
 
@@ -503,6 +788,11 @@ async function stopTracking(): Promise<void> {
 async function capturePhotos(files: File[]): Promise<void> {
   if (!activeMapId.value) {
     statusMessage.value = "Map is required before adding photos.";
+    return;
+  }
+
+  if (isDraftActiveMap.value) {
+    statusMessage.value = "Save calibration to persist this map before capturing photos.";
     return;
   }
 
@@ -574,7 +864,7 @@ async function syncNow(): Promise<void> {
   statusMessage.value = "Sync in progress...";
 
   try {
-    const result = await syncPendingRecords(clientId);
+    const result = await syncPendingRecords(clientId, activeMapId.value);
     syncSummary.value = `Synced ${result.syncedPoints} point(s), ${result.syncedPhotos} photo(s).`;
     if (result.failedPhotos > 0) {
       syncSummary.value += ` ${result.failedPhotos} photo(s) failed.`;
@@ -628,6 +918,11 @@ function setOnlineState(value: boolean): void {
 
 function handleOnline(): void {
   setOnlineState(true);
+  refreshServerMaps()
+    .then(() => syncActiveCalibrationIfNeeded())
+    .catch((error) => {
+      statusMessage.value = error instanceof Error ? error.message : "Failed to refresh server maps.";
+    });
 }
 
 function handleOffline(): void {
@@ -643,7 +938,10 @@ watch(activeMapId, () => {
 });
 
 onMounted(async () => {
-  await refreshMaps();
+  await refreshOfflineMaps();
+  if (online.value) {
+    await refreshServerMaps();
+  }
   await Promise.all([refreshMapData(), refreshPending()]);
 
   stopLocationWatch = startLocationWatch(

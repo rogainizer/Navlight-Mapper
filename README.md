@@ -3,7 +3,8 @@
 Offline-first web app for field mapping with GPS, photo capture, and online sync.
 
 ## Features
-- Offline JPEG map storage (IndexedDB)
+- Server-backed map library with calibration persistence
+- Single offline JPEG map cache (IndexedDB)
 - In-app 3-point map calibration
 - Live GPS position display on calibrated map
 - Manual start/stop movement tracking
@@ -55,3 +56,38 @@ Photo upload storage location is configurable with `UPLOAD_DIR`.
 - Docker Compose storage source is configurable via `${UPLOADS_VOLUME_SOURCE:-uploads-data}`.
 - Example host bind path: `UPLOADS_VOLUME_SOURCE=./data/uploads`
 - Sync endpoint: `POST /api/sync/batch`.
+
+## Map Workflow
+1. Go online and open Map Selection.
+2. In Server Map, choose one of:
+   - Existing server map (loads it for use)
+   - Create new map (shows map name + file/URL import controls)
+3. For Create new map: enter map name, load a local image or download from URL.
+4. Calibrate the map using 3 control points.
+5. Click Save Calibration to persist the new map and calibration details.
+
+Important behavior:
+- The map is persisted only when calibration is saved.
+- Map image bytes are stored as-is on the server (no resize/transcode).
+- The app keeps one offline map at a time; selecting/saving another map replaces the previous offline cache.
+- Loading a new map from file or URL clears local browser map data (offline map, calibration, tracks, points, and photos) before starting calibration.
+- The app asks for confirmation before clearing local browser data for a new map load.
+- Existing maps are chosen from the server list while online.
+- Selecting an existing server map also downloads all server photos and photo locations for that map into local browser cache.
+- When an existing server map is selected, create/import controls and calibration details for new-map creation are hidden.
+- Server data is not deleted when local browser data is cleared.
+
+Map endpoints:
+- `GET /api/maps`
+- `GET /api/maps/:mapId/image`
+- `GET /api/maps/:mapId/photos`
+- `POST /api/maps`
+- `PUT /api/maps/:mapId/calibration`
+
+## Test Map
+
+https://rogaine-results.com/2026/akaroa-rogaine/6hr/map.jpg
+
+Point 1 X 858.2  Y 623.5  Lat -43.739000 Lng 172.972000
+Point 2 X 1686.8 Y 1185.1 Lat -43.787000 Lng 173.008000
+Point 3 X 564.5  Y 1103.8 Lat -43.746000 Lng 172.921000 

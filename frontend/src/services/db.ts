@@ -47,6 +47,53 @@ interface MapperDB extends DBSchema {
 const DB_NAME = "navlight-mapper";
 const DB_VERSION = 1;
 
+function normalizeCalibration(calibration: CalibrationModel | null): CalibrationModel | null {
+  if (!calibration) {
+    return null;
+  }
+
+  const controlPoints = calibration.controlPoints.map((point) => ({
+    imageX: Number(point.imageX),
+    imageY: Number(point.imageY),
+    lat: Number(point.lat),
+    lng: Number(point.lng)
+  })) as CalibrationModel["controlPoints"];
+
+  const coefficients = calibration.coefficients.map((value) => Number(value)) as CalibrationModel["coefficients"];
+
+  return {
+    controlPoints,
+    coefficients
+  };
+}
+
+function toStoredMapRecord(map: MapRecord): MapRecord {
+  return {
+    id: String(map.id),
+    name: String(map.name),
+    blob: map.blob,
+    createdAt: String(map.createdAt),
+    calibration: normalizeCalibration(map.calibration)
+  };
+}
+
+function toStoredPhotoRecord(photo: PhotoRecord): PhotoRecord {
+  return {
+    id: String(photo.id),
+    trackId: photo.trackId,
+    mapId: String(photo.mapId),
+    lat: Number(photo.lat),
+    lng: Number(photo.lng),
+    accuracy: Number(photo.accuracy),
+    capturedAt: String(photo.capturedAt),
+    fileName: String(photo.fileName),
+    mimeType: String(photo.mimeType),
+    blob: photo.blob,
+    syncStatus: photo.syncStatus,
+    lastError: photo.lastError
+  };
+}
+
 const dbPromise = openDB<MapperDB>(DB_NAME, DB_VERSION, {
   upgrade(db: IDBPDatabase<MapperDB>) {
     const mapStore = db.createObjectStore("maps", { keyPath: "id" });
@@ -76,7 +123,24 @@ export async function listMaps(): Promise<MapRecord[]> {
 
 export async function saveMap(map: MapRecord): Promise<void> {
   const db = await dbPromise;
-  await db.put("maps", map);
+  const tx = db.transaction("maps", "readwrite");
+  await tx.store.clear();
+  await tx.store.put(toStoredMapRecord(map));
+  await tx.done;
+}
+
+export async function clearLocalMapSessionData(): Promise<void> {
+  const db = await dbPromise;
+  const tx = db.transaction(["maps", "tracks", "points", "photos"], "readwrite");
+
+  await Promise.all([
+    tx.objectStore("maps").clear(),
+    tx.objectStore("tracks").clear(),
+    tx.objectStore("points").clear(),
+    tx.objectStore("photos").clear()
+  ]);
+
+  await tx.done;
 }
 
 export async function updateMapCalibration(mapId: string, calibration: CalibrationModel): Promise<void> {
@@ -85,7 +149,7 @@ export async function updateMapCalibration(mapId: string, calibration: Calibrati
   if (!map) {
     throw new Error("Map not found while saving calibration.");
   }
-  map.calibration = calibration;
+  map.calibration = normalizeCalibration(calibration);
   await db.put("maps", map);
 }
 
@@ -140,7 +204,23 @@ export async function markPointsSynced(pointIds: string[]): Promise<void> {
 
 export async function savePhoto(photo: PhotoRecord): Promise<void> {
   const db = await dbPromise;
-  await db.put("photos", photo);
+  await db.put("photos", toStoredPhotoRecord(photo));
+}
+
+export async function replacePhotosForMap(mapId: string, photos: PhotoRecord[]): Promise<void> {
+  const db = await dbPromise;
+  const tx = db.transaction("photos", "readwrite");
+
+  const existingIds = await tx.store.index("by-mapId").getAllKeys(mapId);
+  for (const existingId of existingIds) {
+    await tx.store.delete(String(existingId));
+  }
+
+  for (const photo of photos) {
+    await tx.store.put(toStoredPhotoRecord(photo));
+  }
+
+  await tx.done;
 }
 
 export async function deletePhoto(photoId: string): Promise<void> {
@@ -161,6 +241,14 @@ export async function listPendingPhotos(): Promise<PhotoRecord[]> {
     db.getAllFromIndex("photos", "by-syncStatus", "failed")
   ]);
   return [...pending, ...failed];
+}
+
+export async function listPendingPhotosForMap(mapId: string): Promise<PhotoRecord[]> {
+  const db = await dbPromise;
+  const photos: PhotoRecord[] = await db.getAllFromIndex("photos", "by-mapId", mapId);
+  return photos
+    .filter((photo) => photo.syncStatus === "pending" || photo.syncStatus === "failed")
+    .sort((a, b) => a.capturedAt.localeCompare(b.capturedAt));
 }
 
 export async function markPhotosSynced(photoIds: string[]): Promise<void> {

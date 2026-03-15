@@ -14,6 +14,25 @@ function sanitizeLocalId(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]/g, "");
 }
 
+function sanitizeMapFolderName(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "unknown-map";
+  }
+
+  const sanitized = trimmed
+    .replace(/[\x00-\x1f]/g, "")
+    .replace(/[<>:"/\\|?*]/g, "_")
+    .replace(/[.\s]+$/g, "")
+    .trim();
+
+  if (!sanitized) {
+    return "unknown-map";
+  }
+
+  return sanitized.slice(0, 80);
+}
+
 function extensionFromMimeType(mimeType: string): string {
   if (mimeType === "image/png") {
     return "png";
@@ -31,14 +50,10 @@ export async function ensureUploadDirectory(): Promise<void> {
 export async function saveUploadedPhoto(
   file: UploadedPhotoFile,
   localId: string,
-  capturedAt: string
+  mapName: string
 ): Promise<{ filePath: string; fileSize: number }> {
-  const date = new Date(capturedAt);
-  const year = String(date.getUTCFullYear());
-  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(date.getUTCDate()).padStart(2, "0");
-
-  const directory = path.join(uploadRoot, year, month, day);
+  const safeMapFolder = sanitizeMapFolderName(mapName);
+  const directory = path.join(uploadRoot, safeMapFolder);
   await mkdir(directory, { recursive: true });
 
   const extension = extensionFromMimeType(file.mimetype);
@@ -48,7 +63,7 @@ export async function saveUploadedPhoto(
 
   await writeFile(absolutePath, file.buffer);
 
-  const relativePath = path.posix.join(year, month, day, fileName);
+  const relativePath = path.posix.join(safeMapFolder, fileName);
   return {
     filePath: relativePath,
     fileSize: file.size
