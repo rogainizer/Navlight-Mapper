@@ -96,5 +96,30 @@ docker compose --env-file "${RUNTIME_ENV_FILE}" -f "${COMPOSE_FILE}" pull
 echo "Starting application containers..."
 docker compose --env-file "${RUNTIME_ENV_FILE}" -f "${COMPOSE_FILE}" up -d --remove-orphans
 
+echo "Waiting for containers to stabilize..."
+sleep 5
+
+check_container_running() {
+  local container_name="$1"
+  local status
+
+  status="$(docker inspect -f '{{.State.Status}}' "${container_name}" 2>/dev/null || true)"
+  if [[ "${status}" != "running" ]]; then
+    echo "Container ${container_name} is not running (status: ${status:-missing})."
+    echo "Recent logs for ${container_name}:"
+    docker logs --tail 200 "${container_name}" || true
+    return 1
+  fi
+
+  local restart_count
+  restart_count="$(docker inspect -f '{{.RestartCount}}' "${container_name}" 2>/dev/null || echo '0')"
+  if [[ "${restart_count}" != "0" ]]; then
+    echo "Warning: ${container_name} has restarted ${restart_count} time(s)."
+  fi
+}
+
+check_container_running "navlight-mapper-server"
+check_container_running "navlight-mapper-frontend"
+
 echo "Deployment status:"
 docker compose --env-file "${RUNTIME_ENV_FILE}" -f "${COMPOSE_FILE}" ps
