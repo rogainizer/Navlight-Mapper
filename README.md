@@ -110,6 +110,7 @@ Trigger mode:
 What it does:
 - Builds and pushes frontend and backend images to GHCR.
 - Uploads the deploy bundle under deploy/ to the droplet.
+- Creates the target MySQL database if it does not already exist.
 - Runs an idempotent SQL migration script against your existing MySQL database.
 - Pulls and starts the frontend/backend with Docker Compose on the droplet.
 
@@ -123,6 +124,7 @@ Required GitHub repository secrets:
 - DROPLET_HOST
 - DROPLET_USER
 - DROPLET_SSH_KEY
+- DROPLET_SSH_PASSPHRASE (optional, only if the private key is encrypted)
 - DROPLET_PORT (optional, defaults to 22)
 - GHCR_READ_USER
 - GHCR_READ_TOKEN (PAT with read:packages)
@@ -144,6 +146,7 @@ Caddy routing:
 
 Note:
 - Frontend already proxies /api and /uploads to the backend service internally, so planner.rogainizer.com only needs to reverse proxy to navlight-mapper-frontend:80.
+- If MySQL runs on the droplet host machine, set `DB_HOST` to `localhost` or `127.0.0.1`; the deploy script remaps this to `host.docker.internal` for Docker-based migration/runtime connectivity.
 
 ## Test Map
 

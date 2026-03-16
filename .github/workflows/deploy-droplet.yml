@@ -71,6 +71,7 @@ jobs:
           host: ${{ secrets.DROPLET_HOST }}
           username: ${{ secrets.DROPLET_USER }}
           key: ${{ secrets.DROPLET_SSH_KEY }}
+          passphrase: ${{ secrets.DROPLET_SSH_PASSPHRASE }}
           port: ${{ secrets.DROPLET_PORT || 22 }}
           source: deploy
           target: ${{ env.DEPLOY_PATH }}
@@ -98,6 +99,7 @@ jobs:
           host: ${{ secrets.DROPLET_HOST }}
           username: ${{ secrets.DROPLET_USER }}
           key: ${{ secrets.DROPLET_SSH_KEY }}
+          passphrase: ${{ secrets.DROPLET_SSH_PASSPHRASE }}
           port: ${{ secrets.DROPLET_PORT || 22 }}
           envs: DEPLOY_PATH,APP_DOMAIN,APP_IMAGE_TAG,FRONTEND_IMAGE,SERVER_IMAGE,DB_HOST,DB_PORT,DB_USER,DB_PASSWORD,DB_NAME,CADDY_DOCKER_NETWORK,UPLOADS_VOLUME_SOURCE,SERVER_UPLOAD_DIR,GHCR_READ_USER,GHCR_READ_TOKEN
           script: |
