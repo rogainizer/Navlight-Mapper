@@ -1,0 +1,3 @@
+planner.rogainizer.com {
+  reverse_proxy navlight-mapper-frontend:80
+}

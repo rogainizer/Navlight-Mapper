@@ -1,0 +1,40 @@
+services:
+  server:
+    image: ${SERVER_IMAGE}:${APP_IMAGE_TAG}
+    container_name: navlight-mapper-server
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+      UPLOAD_DIR: ${SERVER_UPLOAD_DIR:-/app/uploads}
+    volumes:
+      - ${UPLOADS_VOLUME_SOURCE:-/opt/navlight-mapper/uploads}:${SERVER_UPLOAD_DIR:-/app/uploads}
+    networks:
+      - app
+
+  frontend:
+    image: ${FRONTEND_IMAGE}:${APP_IMAGE_TAG}
+    container_name: navlight-mapper-frontend
+    pull_policy: always
+    restart: unless-stopped
+    depends_on:
+      - server
+    labels:
+      caddy: ${APP_DOMAIN:-planner.rogainizer.com}
+      caddy.reverse_proxy: "{{upstreams 80}}"
+    networks:
+      - app
+      - caddy
+
+networks:
+  app:
+    name: ${APP_STACK_NETWORK:-navlight-mapper-app}
+
+  caddy:
+    external: true
+    name: ${CADDY_DOCKER_NETWORK:-caddy}
