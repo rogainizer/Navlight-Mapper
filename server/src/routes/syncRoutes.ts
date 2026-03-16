@@ -37,6 +37,17 @@ interface MapPhotoRow extends RowDataPacket {
   file_path: string;
 }
 
+interface MapCommentRow extends RowDataPacket {
+  local_id: string;
+  track_local_id: string | null;
+  map_local_id: string;
+  latitude: number | string;
+  longitude: number | string;
+  accuracy: number | string;
+  comment_text: string;
+  created_at: string | Date;
+}
+
 interface RouteRow extends RowDataPacket {
   local_id: string;
   map_local_id: string;
@@ -74,6 +85,21 @@ interface MapPhotoResponse {
   fileUrl: string;
 }
 
+interface MapCommentResponse {
+  id: string;
+  trackId: string | null;
+  mapId: string;
+  lat: number;
+  lng: number;
+  accuracy: number;
+  commentText: string;
+  createdAt: string;
+}
+
+interface UpdateCommentBody {
+  commentText?: unknown;
+}
+
 interface MapRoutePoint {
   lat: number;
   lng: number;
@@ -95,6 +121,7 @@ interface BatchMetadata {
   createdAt: string;
   pointCount: number;
   photoCount: number;
+  commentCount?: number;
 }
 
 interface IncomingPoint {
@@ -118,6 +145,17 @@ interface IncomingPhotoMeta {
   mimeType: string;
   fileName: string;
   uploadField: string;
+}
+
+interface IncomingCommentMeta {
+  id: string;
+  trackId: string | null;
+  mapId: string;
+  lat: number;
+  lng: number;
+  accuracy: number;
+  commentText: string;
+  createdAt: string;
 }
 
 interface MapFetchRequestBody {
@@ -284,6 +322,19 @@ function toMapPhotoResponse(row: MapPhotoRow): MapPhotoResponse {
   };
 }
 
+function toMapCommentResponse(row: MapCommentRow): MapCommentResponse {
+  return {
+    id: row.local_id,
+    trackId: row.track_local_id,
+    mapId: row.map_local_id,
+    lat: Number(row.latitude),
+    lng: Number(row.longitude),
+    accuracy: Number(row.accuracy),
+    commentText: row.comment_text,
+    createdAt: toIsoString(row.created_at)
+  };
+}
+
 function toMapRouteResponse(row: RouteRow): MapRouteResponse {
   return {
     id: row.local_id,
@@ -376,7 +427,8 @@ async function upsertBatch(
 async function ensureTracks(
   connection: PoolConnection,
   points: IncomingPoint[],
-  photosMeta: IncomingPhotoMeta[]
+  photosMeta: IncomingPhotoMeta[],
+  commentsMeta: IncomingCommentMeta[]
 ): Promise<void> {
   const trackMap = new Map<string, string>();
 
@@ -387,6 +439,12 @@ async function ensureTracks(
   photosMeta.forEach((photo) => {
     if (photo.trackId) {
       trackMap.set(photo.trackId, photo.mapId);
+    }
+  });
+
+  commentsMeta.forEach((comment) => {
+    if (comment.trackId) {
+      trackMap.set(comment.trackId, comment.mapId);
     }
   });
 
@@ -523,6 +581,152 @@ syncRoutes.get("/maps/:mapId/photos", async (request: Request, response: Respons
   );
 
   response.json({ photos: rows.map(toMapPhotoResponse) });
+});
+
+syncRoutes.get("/maps/:mapId/comments", async (request: Request, response: Response) => {
+  const mapId = readParam(request.params.mapId);
+  if (!mapId) {
+    response.status(400).json({ message: "Map id is required." });
+    return;
+  }
+
+  const [rows] = await pool.query<MapCommentRow[]>(
+    `
+    SELECT
+      local_id,
+      track_local_id,
+      map_local_id,
+      latitude,
+      longitude,
+      accuracy,
+      comment_text,
+      created_at
+    FROM comments
+    WHERE map_local_id = ?
+    ORDER BY created_at ASC
+    `,
+    [mapId]
+  );
+
+  response.json({ comments: rows.map(toMapCommentResponse) });
+});
+
+syncRoutes.put("/maps/:mapId/comments/:commentId", async (request: Request, response: Response) => {
+  const mapId = readParam(request.params.mapId);
+  const commentId = readParam(request.params.commentId);
+
+  if (!mapId) {
+    response.status(400).json({ message: "Map id is required." });
+    return;
+  }
+
+  if (!commentId) {
+    response.status(400).json({ message: "Comment id is required." });
+    return;
+  }
+
+  const body = (request.body || {}) as UpdateCommentBody;
+  const commentText = typeof body.commentText === "string" ? body.commentText.trim() : "";
+
+  if (!commentText) {
+    response.status(400).json({ message: "commentText is required." });
+    return;
+  }
+
+  if (commentText.length > 500) {
+    response.status(400).json({ message: "commentText must be 500 characters or fewer." });
+    return;
+  }
+
+  const [existingRows] = await pool.query<RowDataPacket[]>(
+    `
+    SELECT local_id
+    FROM comments
+    WHERE local_id = ? AND map_local_id = ?
+    LIMIT 1
+    `,
+    [commentId, mapId]
+  );
+
+  if (existingRows.length === 0) {
+    response.status(404).json({ message: "Comment not found." });
+    return;
+  }
+
+  await pool.execute(
+    `
+    UPDATE comments
+    SET comment_text = ?, synced_at = CURRENT_TIMESTAMP
+    WHERE local_id = ? AND map_local_id = ?
+    `,
+    [commentText, commentId, mapId]
+  );
+
+  const [rows] = await pool.query<MapCommentRow[]>(
+    `
+    SELECT
+      local_id,
+      track_local_id,
+      map_local_id,
+      latitude,
+      longitude,
+      accuracy,
+      comment_text,
+      created_at
+    FROM comments
+    WHERE local_id = ? AND map_local_id = ?
+    LIMIT 1
+    `,
+    [commentId, mapId]
+  );
+
+  const saved = rows[0];
+  if (!saved) {
+    response.status(500).json({ message: "Failed to update comment." });
+    return;
+  }
+
+  response.json({ comment: toMapCommentResponse(saved) });
+});
+
+syncRoutes.delete("/maps/:mapId/comments/:commentId", async (request: Request, response: Response) => {
+  const mapId = readParam(request.params.mapId);
+  const commentId = readParam(request.params.commentId);
+
+  if (!mapId) {
+    response.status(400).json({ message: "Map id is required." });
+    return;
+  }
+
+  if (!commentId) {
+    response.status(400).json({ message: "Comment id is required." });
+    return;
+  }
+
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `
+    SELECT local_id
+    FROM comments
+    WHERE local_id = ? AND map_local_id = ?
+    LIMIT 1
+    `,
+    [commentId, mapId]
+  );
+
+  if (rows.length === 0) {
+    response.status(404).json({ message: "Comment not found." });
+    return;
+  }
+
+  await pool.execute(
+    `
+    DELETE FROM comments
+    WHERE local_id = ? AND map_local_id = ?
+    `,
+    [commentId, mapId]
+  );
+
+  response.status(204).send();
 });
 
 syncRoutes.get("/maps/:mapId/routes", async (request: Request, response: Response) => {
@@ -849,11 +1053,13 @@ syncRoutes.get("/sync/status", async (_request: Request, response: Response) => 
   const [batchRows] = await pool.query<CountRow[]>("SELECT COUNT(*) AS total FROM sync_batches");
   const [pointRows] = await pool.query<CountRow[]>("SELECT COUNT(*) AS total FROM track_points");
   const [photoRows] = await pool.query<CountRow[]>("SELECT COUNT(*) AS total FROM photos");
+  const [commentRows] = await pool.query<CountRow[]>("SELECT COUNT(*) AS total FROM comments");
 
   response.json({
     batches: batchRows[0]?.total || 0,
     points: pointRows[0]?.total || 0,
-    photos: photoRows[0]?.total || 0
+    photos: photoRows[0]?.total || 0,
+    comments: commentRows[0]?.total || 0
   });
 });
 
@@ -871,8 +1077,13 @@ syncRoutes.post("/sync/batch", syncUpload.array("photos", 100), async (request: 
     request.body.photosMeta,
     []
   );
+  const commentsMetaRaw = parseJsonField<IncomingCommentMeta[] | IncomingCommentMeta>(
+    request.body.commentsMeta,
+    []
+  );
   const points = ensureArray(pointsRaw);
   const photosMeta = ensureArray(photosMetaRaw);
+  const commentsMeta = ensureArray(commentsMetaRaw);
   const files = ((request.files as UploadedPhotoFile[]) || []).slice(0, photosMeta.length);
 
   if (!metadata.batchId || !metadata.clientId) {
@@ -883,11 +1094,13 @@ syncRoutes.post("/sync/batch", syncUpload.array("photos", 100), async (request: 
   const syncedPointIds: string[] = [];
   const syncedPhotoIds: string[] = [];
   const failedPhotoIds: string[] = [];
+  const syncedCommentIds: string[] = [];
+  const failedCommentIds: string[] = [];
 
   try {
     await withTransaction(async (connection) => {
       await upsertBatch(connection, metadata, "processing");
-      await ensureTracks(connection, points, photosMeta);
+      await ensureTracks(connection, points, photosMeta, commentsMeta);
       const mapNames = await loadMapNames(
         connection,
         photosMeta.map((photo) => photo.mapId)
@@ -962,6 +1175,44 @@ syncRoutes.post("/sync/batch", syncUpload.array("photos", 100), async (request: 
         syncedPhotoIds.push(photoMeta.id);
       }
 
+      for (const commentMeta of commentsMeta) {
+        const createdAt = toMySqlDateTime(commentMeta.createdAt, "commentsMeta[].createdAt");
+
+        if (!commentMeta.commentText || commentMeta.commentText.trim().length === 0) {
+          failedCommentIds.push(commentMeta.id);
+          continue;
+        }
+
+        await connection.execute(
+          `
+          INSERT INTO comments
+            (local_id, track_local_id, map_local_id, latitude, longitude, accuracy, comment_text, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE
+            track_local_id = VALUES(track_local_id),
+            map_local_id = VALUES(map_local_id),
+            latitude = VALUES(latitude),
+            longitude = VALUES(longitude),
+            accuracy = VALUES(accuracy),
+            comment_text = VALUES(comment_text),
+            created_at = VALUES(created_at),
+            synced_at = CURRENT_TIMESTAMP
+          `,
+          [
+            commentMeta.id,
+            commentMeta.trackId,
+            commentMeta.mapId,
+            commentMeta.lat,
+            commentMeta.lng,
+            commentMeta.accuracy,
+            commentMeta.commentText.trim(),
+            createdAt
+          ]
+        );
+
+        syncedCommentIds.push(commentMeta.id);
+      }
+
       await upsertBatch(connection, metadata, "completed");
     });
 
@@ -969,7 +1220,9 @@ syncRoutes.post("/sync/batch", syncUpload.array("photos", 100), async (request: 
       batchId: metadata.batchId,
       syncedPointIds,
       syncedPhotoIds,
-      failedPhotoIds
+      failedPhotoIds,
+      syncedCommentIds,
+      failedCommentIds
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Batch sync failed";

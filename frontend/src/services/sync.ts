@@ -1,6 +1,9 @@
 import {
+  listPendingCommentsForMap,
   listPendingPhotosForMap,
   listPendingPoints,
+  markCommentsFailed,
+  markCommentsSynced,
   markPhotosFailed,
   markPhotosSynced,
   markPointsSynced
@@ -11,6 +14,8 @@ interface SyncOutcome {
   syncedPoints: number;
   syncedPhotos: number;
   failedPhotos: number;
+  syncedComments: number;
+  failedComments: number;
 }
 
 function extensionForMimeType(mimeType: string): string {
@@ -24,13 +29,14 @@ function extensionForMimeType(mimeType: string): string {
 }
 
 export async function syncPendingRecords(clientId: string, activeMapId: string | null): Promise<SyncOutcome> {
-  const [pendingPoints, pendingPhotos] = await Promise.all([
+  const [pendingPoints, pendingPhotos, pendingComments] = await Promise.all([
     listPendingPoints(),
-    activeMapId ? listPendingPhotosForMap(activeMapId) : Promise.resolve([])
+    activeMapId ? listPendingPhotosForMap(activeMapId) : Promise.resolve([]),
+    activeMapId ? listPendingCommentsForMap(activeMapId) : Promise.resolve([])
   ]);
 
-  if (pendingPoints.length === 0 && pendingPhotos.length === 0) {
-    return { syncedPoints: 0, syncedPhotos: 0, failedPhotos: 0 };
+  if (pendingPoints.length === 0 && pendingPhotos.length === 0 && pendingComments.length === 0) {
+    return { syncedPoints: 0, syncedPhotos: 0, failedPhotos: 0, syncedComments: 0, failedComments: 0 };
   }
 
   const batchId = crypto.randomUUID();
@@ -44,7 +50,8 @@ export async function syncPendingRecords(clientId: string, activeMapId: string |
       clientId,
       createdAt,
       pointCount: pendingPoints.length,
-      photoCount: pendingPhotos.length
+      photoCount: pendingPhotos.length,
+      commentCount: pendingComments.length
     })
   );
 
@@ -87,25 +94,51 @@ export async function syncPendingRecords(clientId: string, activeMapId: string |
     formData.append("photoFields", `photo-${index}`);
   });
 
+  formData.set(
+    "commentsMeta",
+    JSON.stringify(
+      pendingComments.map((comment) => ({
+        id: comment.id,
+        trackId: comment.trackId,
+        mapId: comment.mapId,
+        lat: comment.lat,
+        lng: comment.lng,
+        accuracy: comment.accuracy,
+        commentText: comment.commentText,
+        createdAt: comment.createdAt
+      }))
+    )
+  );
+
   try {
     const response = await uploadSyncBatch(formData);
     await Promise.all([
       markPointsSynced(response.syncedPointIds),
       markPhotosSynced(response.syncedPhotoIds),
-      markPhotosFailed(response.failedPhotoIds, "Photo upload failed on server.")
+      markPhotosFailed(response.failedPhotoIds, "Photo upload failed on server."),
+      markCommentsSynced(response.syncedCommentIds),
+      markCommentsFailed(response.failedCommentIds, "Comment upload failed on server.")
     ]);
 
     return {
       syncedPoints: response.syncedPointIds.length,
       syncedPhotos: response.syncedPhotoIds.length,
-      failedPhotos: response.failedPhotoIds.length
+      failedPhotos: response.failedPhotoIds.length,
+      syncedComments: response.syncedCommentIds.length,
+      failedComments: response.failedCommentIds.length
     };
   } catch (error) {
     const reason = error instanceof Error ? error.message : "Unknown sync error";
-    await markPhotosFailed(
-      pendingPhotos.map((photo) => photo.id),
-      reason
-    );
+    await Promise.all([
+      markPhotosFailed(
+        pendingPhotos.map((photo) => photo.id),
+        reason
+      ),
+      markCommentsFailed(
+        pendingComments.map((comment) => comment.id),
+        reason
+      )
+    ]);
     throw error;
   }
 }

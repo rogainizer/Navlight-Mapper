@@ -1,6 +1,7 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 import type {
   CalibrationModel,
+  CommentRecord,
   MapRecord,
   PendingCounts,
   PhotoRecord,
@@ -42,10 +43,19 @@ interface MapperDB extends DBSchema {
       "by-syncStatus": string;
     };
   };
+  comments: {
+    key: string;
+    value: CommentRecord;
+    indexes: {
+      "by-mapId": string;
+      "by-trackId": string;
+      "by-syncStatus": string;
+    };
+  };
 }
 
 const DB_NAME = "navlight-mapper";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 function normalizeCalibration(calibration: CalibrationModel | null): CalibrationModel | null {
   if (!calibration) {
@@ -94,24 +104,58 @@ function toStoredPhotoRecord(photo: PhotoRecord): PhotoRecord {
   };
 }
 
-const dbPromise = openDB<MapperDB>(DB_NAME, DB_VERSION, {
-  upgrade(db: IDBPDatabase<MapperDB>) {
+function toStoredCommentRecord(comment: CommentRecord): CommentRecord {
+  return {
+    id: String(comment.id),
+    trackId: comment.trackId,
+    mapId: String(comment.mapId),
+    lat: Number(comment.lat),
+    lng: Number(comment.lng),
+    accuracy: Number(comment.accuracy),
+    commentText: String(comment.commentText),
+    createdAt: String(comment.createdAt),
+    syncStatus: comment.syncStatus,
+    lastError: comment.lastError
+  };
+}
+
+function ensureStores(db: IDBPDatabase<MapperDB>): void {
+  if (!db.objectStoreNames.contains("maps")) {
     const mapStore = db.createObjectStore("maps", { keyPath: "id" });
     mapStore.createIndex("by-createdAt", "createdAt");
+  }
 
+  if (!db.objectStoreNames.contains("tracks")) {
     const trackStore = db.createObjectStore("tracks", { keyPath: "id" });
     trackStore.createIndex("by-mapId", "mapId");
     trackStore.createIndex("by-syncStatus", "syncStatus");
+  }
 
+  if (!db.objectStoreNames.contains("points")) {
     const pointStore = db.createObjectStore("points", { keyPath: "id" });
     pointStore.createIndex("by-mapId", "mapId");
     pointStore.createIndex("by-trackId", "trackId");
     pointStore.createIndex("by-syncStatus", "syncStatus");
+  }
 
+  if (!db.objectStoreNames.contains("photos")) {
     const photoStore = db.createObjectStore("photos", { keyPath: "id" });
     photoStore.createIndex("by-mapId", "mapId");
     photoStore.createIndex("by-trackId", "trackId");
     photoStore.createIndex("by-syncStatus", "syncStatus");
+  }
+
+  if (!db.objectStoreNames.contains("comments")) {
+    const commentStore = db.createObjectStore("comments", { keyPath: "id" });
+    commentStore.createIndex("by-mapId", "mapId");
+    commentStore.createIndex("by-trackId", "trackId");
+    commentStore.createIndex("by-syncStatus", "syncStatus");
+  }
+}
+
+const dbPromise = openDB<MapperDB>(DB_NAME, DB_VERSION, {
+  upgrade(db: IDBPDatabase<MapperDB>) {
+    ensureStores(db);
   }
 });
 
@@ -131,13 +175,14 @@ export async function saveMap(map: MapRecord): Promise<void> {
 
 export async function clearLocalMapSessionData(): Promise<void> {
   const db = await dbPromise;
-  const tx = db.transaction(["maps", "tracks", "points", "photos"], "readwrite");
+  const tx = db.transaction(["maps", "tracks", "points", "photos", "comments"], "readwrite");
 
   await Promise.all([
     tx.objectStore("maps").clear(),
     tx.objectStore("tracks").clear(),
     tx.objectStore("points").clear(),
-    tx.objectStore("photos").clear()
+    tx.objectStore("photos").clear(),
+    tx.objectStore("comments").clear()
   ]);
 
   await tx.done;
@@ -223,9 +268,35 @@ export async function replacePhotosForMap(mapId: string, photos: PhotoRecord[]):
   await tx.done;
 }
 
+export async function saveComment(comment: CommentRecord): Promise<void> {
+  const db = await dbPromise;
+  await db.put("comments", toStoredCommentRecord(comment));
+}
+
+export async function replaceCommentsForMap(mapId: string, comments: CommentRecord[]): Promise<void> {
+  const db = await dbPromise;
+  const tx = db.transaction("comments", "readwrite");
+
+  const existingIds = await tx.store.index("by-mapId").getAllKeys(mapId);
+  for (const existingId of existingIds) {
+    await tx.store.delete(String(existingId));
+  }
+
+  for (const comment of comments) {
+    await tx.store.put(toStoredCommentRecord(comment));
+  }
+
+  await tx.done;
+}
+
 export async function deletePhoto(photoId: string): Promise<void> {
   const db = await dbPromise;
   await db.delete("photos", photoId);
+}
+
+export async function deleteComment(commentId: string): Promise<void> {
+  const db = await dbPromise;
+  await db.delete("comments", commentId);
 }
 
 export async function listPhotosByMap(mapId: string): Promise<PhotoRecord[]> {
@@ -249,6 +320,62 @@ export async function listPendingPhotosForMap(mapId: string): Promise<PhotoRecor
   return photos
     .filter((photo) => photo.syncStatus === "pending" || photo.syncStatus === "failed")
     .sort((a, b) => a.capturedAt.localeCompare(b.capturedAt));
+}
+
+export async function listCommentsByMap(mapId: string): Promise<CommentRecord[]> {
+  const db = await dbPromise;
+  const comments: CommentRecord[] = await db.getAllFromIndex("comments", "by-mapId", mapId);
+  return comments.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export async function listPendingCommentsForMap(mapId: string): Promise<CommentRecord[]> {
+  const db = await dbPromise;
+  const comments: CommentRecord[] = await db.getAllFromIndex("comments", "by-mapId", mapId);
+  return comments
+    .filter((comment) => comment.syncStatus === "pending" || comment.syncStatus === "failed")
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export async function markCommentsSynced(commentIds: string[]): Promise<void> {
+  if (commentIds.length === 0) {
+    return;
+  }
+
+  const db = await dbPromise;
+  const tx = db.transaction("comments", "readwrite");
+  for (const commentId of commentIds) {
+    const comment = await tx.store.get(commentId);
+    if (!comment) {
+      continue;
+    }
+
+    comment.syncStatus = "synced";
+    comment.lastError = null;
+    await tx.store.put(comment);
+  }
+
+  await tx.done;
+}
+
+export async function markCommentsFailed(commentIds: string[], reason: string): Promise<void> {
+  if (commentIds.length === 0) {
+    return;
+  }
+
+  const db = await dbPromise;
+  const tx = db.transaction("comments", "readwrite");
+  for (const commentId of commentIds) {
+    const comment = await tx.store.get(commentId);
+    if (!comment) {
+      continue;
+    }
+
+    comment.syncStatus = "failed";
+    comment.lastError = reason;
+    await tx.store.put(comment);
+  }
+
+  await tx.done;
 }
 
 export async function markPhotosSynced(photoIds: string[]): Promise<void> {
@@ -289,11 +416,17 @@ export async function markPhotosFailed(photoIds: string[], reason: string): Prom
 
 export async function getPendingCounts(): Promise<PendingCounts> {
   const db = await dbPromise;
-  const [points, pendingPhotos, failedPhotos] = await Promise.all([
+  const [points, pendingPhotos, failedPhotos, pendingComments, failedComments] = await Promise.all([
     db.countFromIndex("points", "by-syncStatus", "pending"),
     db.countFromIndex("photos", "by-syncStatus", "pending"),
-    db.countFromIndex("photos", "by-syncStatus", "failed")
+    db.countFromIndex("photos", "by-syncStatus", "failed"),
+    db.countFromIndex("comments", "by-syncStatus", "pending"),
+    db.countFromIndex("comments", "by-syncStatus", "failed")
   ]);
 
-  return { points, photos: pendingPhotos + failedPhotos };
+  return {
+    points,
+    photos: pendingPhotos + failedPhotos,
+    comments: pendingComments + failedComments
+  };
 }

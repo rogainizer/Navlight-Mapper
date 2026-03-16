@@ -56,6 +56,23 @@ CREATE TABLE IF NOT EXISTS photos (
   INDEX idx_photos_captured_at (captured_at)
 );
 
+CREATE TABLE IF NOT EXISTS comments (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  local_id VARCHAR(64) NOT NULL,
+  track_local_id VARCHAR(64) NULL,
+  map_local_id VARCHAR(64) NOT NULL,
+  latitude DECIMAL(10, 7) NOT NULL,
+  longitude DECIMAL(10, 7) NOT NULL,
+  accuracy FLOAT NOT NULL,
+  comment_text TEXT NOT NULL,
+  created_at DATETIME NOT NULL,
+  synced_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_comments_local_id (local_id),
+  INDEX idx_comments_track_local_id (track_local_id),
+  INDEX idx_comments_map_local_id (map_local_id),
+  INDEX idx_comments_created_at (created_at)
+);
+
 CREATE TABLE IF NOT EXISTS maps (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   local_id VARCHAR(64) NOT NULL,

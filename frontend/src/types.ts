@@ -90,6 +90,19 @@ export interface PhotoRecord {
   lastError: string | null;
 }
 
+export interface CommentRecord {
+  id: string;
+  trackId: string | null;
+  mapId: string;
+  lat: number;
+  lng: number;
+  accuracy: number;
+  commentText: string;
+  createdAt: string;
+  syncStatus: SyncStatus;
+  lastError: string | null;
+}
+
 export interface LivePosition {
   lat: number;
   lng: number;
@@ -100,4 +113,5 @@ export interface LivePosition {
 export interface PendingCounts {
   points: number;
   photos: number;
+  comments: number;
 }

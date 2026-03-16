@@ -1,10 +1,18 @@
-import type { CalibrationModel, RoutePoint, ServerMapSummary, ServerRoute } from "../types";
+import type {
+  CalibrationModel,
+  CommentRecord,
+  RoutePoint,
+  ServerMapSummary,
+  ServerRoute
+} from "../types";
 
 export interface SyncBatchResponse {
   batchId: string;
   syncedPointIds: string[];
   syncedPhotoIds: string[];
   failedPhotoIds: string[];
+  syncedCommentIds: string[];
+  failedCommentIds: string[];
 }
 
 interface ApiErrorBody {
@@ -21,6 +29,14 @@ interface ServerMapSingleResponse {
 
 interface ServerMapPhotosResponse {
   photos: ServerMapPhoto[];
+}
+
+interface ServerMapCommentsResponse {
+  comments: ServerMapComment[];
+}
+
+interface ServerMapCommentSingleResponse {
+  comment: ServerMapComment;
 }
 
 interface ServerMapRoutesResponse {
@@ -44,6 +60,17 @@ export interface ServerMapPhoto {
   fileUrl: string;
 }
 
+export interface ServerMapComment {
+  id: string;
+  trackId: string | null;
+  mapId: string;
+  lat: number;
+  lng: number;
+  accuracy: number;
+  commentText: string;
+  createdAt: string;
+}
+
 export interface SaveMapToServerInput {
   mapId?: string;
   name: string;
@@ -56,6 +83,10 @@ export interface SaveMapRouteToServerInput {
   name: string;
   color: string;
   points: RoutePoint[];
+}
+
+export interface UpdateMapCommentInput {
+  commentText: string;
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api";
@@ -139,6 +170,74 @@ export async function listServerMapPhotos(mapId: string): Promise<ServerMapPhoto
 
   const data = (await response.json()) as ServerMapPhotosResponse;
   return data.photos || [];
+}
+
+export async function listServerMapComments(mapId: string): Promise<ServerMapComment[]> {
+  const response = await fetch(`${API_BASE_URL}/maps/${encodeURIComponent(mapId)}/comments`, {
+    method: "GET"
+  });
+
+  if (!response.ok) {
+    const message = await readErrorMessage(response, "Failed to load map comments.");
+    throw new Error(message);
+  }
+
+  const data = (await response.json()) as ServerMapCommentsResponse;
+  return data.comments || [];
+}
+
+export async function updateMapCommentOnServer(
+  mapId: string,
+  commentId: string,
+  payload: UpdateMapCommentInput
+): Promise<ServerMapComment> {
+  const response = await fetch(
+    `${API_BASE_URL}/maps/${encodeURIComponent(mapId)}/comments/${encodeURIComponent(commentId)}`,
+    {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    }
+  );
+
+  if (!response.ok) {
+    const message = await readErrorMessage(response, "Failed to update map comment.");
+    throw new Error(message);
+  }
+
+  const data = (await response.json()) as ServerMapCommentSingleResponse;
+  return data.comment;
+}
+
+export async function deleteMapCommentFromServer(mapId: string, commentId: string): Promise<void> {
+  const response = await fetch(
+    `${API_BASE_URL}/maps/${encodeURIComponent(mapId)}/comments/${encodeURIComponent(commentId)}`,
+    {
+      method: "DELETE"
+    }
+  );
+
+  if (!response.ok) {
+    const message = await readErrorMessage(response, "Failed to delete map comment.");
+    throw new Error(message);
+  }
+}
+
+export function toLocalCommentRecord(comment: ServerMapComment): CommentRecord {
+  return {
+    id: comment.id,
+    trackId: comment.trackId,
+    mapId: comment.mapId,
+    lat: comment.lat,
+    lng: comment.lng,
+    accuracy: comment.accuracy,
+    commentText: comment.commentText,
+    createdAt: comment.createdAt,
+    syncStatus: "synced",
+    lastError: null
+  };
 }
 
 export async function listServerMapRoutes(mapId: string): Promise<ServerRoute[]> {

@@ -9,6 +9,7 @@ Offline-first web app for field mapping with GPS, photo capture, and online sync
 - Live GPS position display on calibrated map
 - Manual start/stop movement tracking
 - Multiple photo capture tied to current location
+- Text comments tied to current GPS or map-selected location
 - Queue-based sync to Node/Express API + MySQL
 - Online route creation (name, color, map-selected points)
 - Mobile and large-screen responsive layout
@@ -78,6 +79,11 @@ Important behavior:
 - Route creation is online-only and only available for saved calibrated maps.
 - Route points are selected by tapping the map and are saved to the server with route name and color.
 - Routes can be removed while online from the route list in the Create Route panel.
+- Comments can be added offline at current GPS or map-selected location and are synced in the same queue flow as photos.
+- Tapping a comment marker opens a popup where comments can be edited or deleted.
+- Editing works offline (queued for sync); deleting comments requires online mode.
+- If photo and comment markers overlap at the tapped location, the app prompts you to choose which marker type to open.
+- If current GPS is outside map bounds, photo and comment location modes default to map selection.
 - When an existing server map is selected, create/import controls and calibration details for new-map creation are hidden.
 - Server data is not deleted when local browser data is cleared.
 
@@ -85,6 +91,9 @@ Map endpoints:
 - `GET /api/maps`
 - `GET /api/maps/:mapId/image`
 - `GET /api/maps/:mapId/photos`
+- `GET /api/maps/:mapId/comments`
+- `PUT /api/maps/:mapId/comments/:commentId`
+- `DELETE /api/maps/:mapId/comments/:commentId`
 - `GET /api/maps/:mapId/routes`
 - `POST /api/maps`
 - `POST /api/maps/:mapId/routes`

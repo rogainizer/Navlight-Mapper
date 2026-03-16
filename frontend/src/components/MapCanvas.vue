@@ -79,6 +79,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { geoToImagePoint } from "../services/calibration";
 import type {
   CalibrationModel,
+  CommentRecord,
   GeoPoint,
   ImagePoint,
   LivePosition,
@@ -91,10 +92,14 @@ import type {
 const props = defineProps<{
   mapBlob: Blob | null;
   calibration: CalibrationModel | null;
+  suppressMarkerClicks?: boolean;
+  selectLocationOnMarkerClick?: boolean;
   currentPosition: LivePosition | null;
   selectedPhotoLocation: GeoPoint | null;
+  selectedCommentLocation: GeoPoint | null;
   points: TrackPointRecord[];
   photos: PhotoRecord[];
+  comments: CommentRecord[];
   routes: ServerRoute[];
   routeDraftPoints: RoutePoint[];
   routeDraftColor: string;
@@ -103,6 +108,9 @@ const props = defineProps<{
 const emit = defineEmits<{
   (event: "image-click", point: ImagePoint): void;
   (event: "photo-marker-click", photos: PhotoRecord[]): void;
+  (event: "comment-marker-click", comments: CommentRecord[]): void;
+  (event: "overlap-marker-click", markers: { photos: PhotoRecord[]; comments: CommentRecord[] }): void;
+  (event: "current-position-coverage-change", isOnMap: boolean | null): void;
 }>();
 
 const MIN_ZOOM = 0.5;
@@ -110,6 +118,8 @@ const MAX_ZOOM = 4;
 const ZOOM_STEP = 0.25;
 const PHOTO_MARKER_RADIUS = 12;
 const PHOTO_MARKER_HIT_PADDING = 4;
+const COMMENT_MARKER_HALF_SIZE = PHOTO_MARKER_RADIUS;
+const COMMENT_MARKER_HIT_PADDING = PHOTO_MARKER_HIT_PADDING;
 type InteractionMode = "select" | "pan";
 
 const containerRef = ref<HTMLDivElement | null>(null);
@@ -141,6 +151,8 @@ const drawState = {
   width: 0,
   height: 0
 };
+
+let lastCurrentPositionCoverage: boolean | null = null;
 
 const zoomPercent = computed(() => Math.round(zoomLevel.value * 100));
 const canPan = computed(
@@ -305,6 +317,23 @@ function getPhotosNearCanvasPoint(canvasPoint: ImagePoint): PhotoRecord[] {
   });
 }
 
+function getCommentsNearCanvasPoint(canvasPoint: ImagePoint): CommentRecord[] {
+  if (!props.calibration || props.comments.length === 0) {
+    return [];
+  }
+
+  const hitHalfSize = COMMENT_MARKER_HALF_SIZE + COMMENT_MARKER_HIT_PADDING;
+
+  return props.comments.filter((comment) => {
+    const point = toCanvasPoint(comment.lat, comment.lng);
+    if (!point) {
+      return false;
+    }
+
+    return Math.abs(canvasPoint.x - point.x) <= hitHalfSize && Math.abs(canvasPoint.y - point.y) <= hitHalfSize;
+  });
+}
+
 function finishDrag(): void {
   const canvas = canvasRef.value;
   if (canvas && dragState.pointerId >= 0 && canvas.hasPointerCapture(dragState.pointerId)) {
@@ -316,7 +345,37 @@ function finishDrag(): void {
   isDragging.value = false;
 }
 
+function getCurrentPositionCoverage(): boolean | null {
+  if (!props.currentPosition || !props.calibration || !loadedImage.value) {
+    return null;
+  }
+
+  const imagePoint = geoToImagePoint(props.calibration as CalibrationModel, props.currentPosition.lat, props.currentPosition.lng);
+  if (!Number.isFinite(imagePoint.x) || !Number.isFinite(imagePoint.y)) {
+    return false;
+  }
+
+  return (
+    imagePoint.x >= 0 &&
+    imagePoint.y >= 0 &&
+    imagePoint.x <= loadedImage.value.naturalWidth &&
+    imagePoint.y <= loadedImage.value.naturalHeight
+  );
+}
+
+function emitCurrentPositionCoverageIfChanged(): void {
+  const coverage = getCurrentPositionCoverage();
+  if (coverage === lastCurrentPositionCoverage) {
+    return;
+  }
+
+  lastCurrentPositionCoverage = coverage;
+  emit("current-position-coverage-change", coverage);
+}
+
 function drawOverlay(): void {
+  emitCurrentPositionCoverageIfChanged();
+
   const canvas = canvasRef.value;
   const image = loadedImage.value;
   if (!canvas || !image) {
@@ -494,6 +553,40 @@ function drawOverlay(): void {
       context.stroke();
     }
   }
+
+  props.comments.forEach((comment) => {
+    const point = toCanvasPoint(comment.lat, comment.lng);
+    if (!point) {
+      return;
+    }
+
+    context.fillStyle = "#f4a261";
+    context.fillRect(
+      point.x - COMMENT_MARKER_HALF_SIZE,
+      point.y - COMMENT_MARKER_HALF_SIZE,
+      COMMENT_MARKER_HALF_SIZE * 2,
+      COMMENT_MARKER_HALF_SIZE * 2
+    );
+  });
+
+  if (props.selectedCommentLocation) {
+    const selectedPoint = toCanvasPoint(props.selectedCommentLocation.lat, props.selectedCommentLocation.lng);
+    if (selectedPoint) {
+      context.strokeStyle = "#2563eb";
+      context.lineWidth = 2;
+
+      context.beginPath();
+      context.arc(selectedPoint.x, selectedPoint.y, 10, 0, Math.PI * 2);
+      context.stroke();
+
+      context.beginPath();
+      context.moveTo(selectedPoint.x - 12, selectedPoint.y);
+      context.lineTo(selectedPoint.x + 12, selectedPoint.y);
+      context.moveTo(selectedPoint.x, selectedPoint.y - 12);
+      context.lineTo(selectedPoint.x, selectedPoint.y + 12);
+      context.stroke();
+    }
+  }
 }
 
 async function loadImage(blob: Blob | null): Promise<void> {
@@ -534,13 +627,40 @@ function onPointerDown(event: PointerEvent): void {
       return;
     }
 
-    const hitPhotos = getPhotosNearCanvasPoint(canvasPoint);
-    if (hitPhotos.length > 0) {
-      emit("photo-marker-click", hitPhotos);
-      return;
+    const imagePoint = canvasPointToImagePoint(canvasPoint);
+
+    if (!props.suppressMarkerClicks) {
+      const hitPhotos = getPhotosNearCanvasPoint(canvasPoint);
+      const hitComments = getCommentsNearCanvasPoint(canvasPoint);
+
+      if (hitPhotos.length > 0 && hitComments.length > 0) {
+        if (props.selectLocationOnMarkerClick && imagePoint) {
+          emit("image-click", imagePoint);
+        }
+        emit("overlap-marker-click", {
+          photos: hitPhotos,
+          comments: hitComments
+        });
+        return;
+      }
+
+      if (hitPhotos.length > 0) {
+        if (props.selectLocationOnMarkerClick && imagePoint) {
+          emit("image-click", imagePoint);
+        }
+        emit("photo-marker-click", hitPhotos);
+        return;
+      }
+
+      if (hitComments.length > 0) {
+        if (props.selectLocationOnMarkerClick && imagePoint) {
+          emit("image-click", imagePoint);
+        }
+        emit("comment-marker-click", hitComments);
+        return;
+      }
     }
 
-    const imagePoint = canvasPointToImagePoint(canvasPoint);
     if (imagePoint) {
       emit("image-click", imagePoint);
     }
@@ -594,6 +714,7 @@ function onPointerCancel(event: PointerEvent): void {
 watch(
   () => props.mapBlob,
   (blob) => {
+    lastCurrentPositionCoverage = null;
     loadImage(blob).catch(() => {
       loadedImage.value = null;
       drawOverlay();
@@ -607,8 +728,10 @@ watch(
     props.calibration,
     props.currentPosition,
     props.selectedPhotoLocation,
+    props.selectedCommentLocation,
     props.points,
     props.photos,
+    props.comments,
     props.routes,
     props.routeDraftPoints,
     props.routeDraftColor
@@ -628,6 +751,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("resize", drawOverlay);
   finishDrag();
   releaseObjectUrl();
+  lastCurrentPositionCoverage = null;
 });
 </script>
 
