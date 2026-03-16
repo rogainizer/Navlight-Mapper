@@ -1,9 +1,6 @@
 name: Deploy To Droplet
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 concurrency:

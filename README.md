@@ -104,6 +104,9 @@ Map endpoints:
 
 This repository now includes a GitHub Actions deploy workflow at .github/workflows/deploy-droplet.yml.
 
+Trigger mode:
+- Manual only (run via GitHub Actions "Run workflow").
+
 What it does:
 - Builds and pushes frontend and backend images to GHCR.
 - Uploads the deploy bundle under deploy/ to the droplet.
