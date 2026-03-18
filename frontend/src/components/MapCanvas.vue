@@ -1,6 +1,6 @@
 <template>
   <div ref="containerRef" class="map-canvas-shell">
-    <div class="map-canvas-wrap">
+    <div ref="canvasWrapRef" class="map-canvas-wrap">
       <canvas
         ref="canvasRef"
         :class="[
@@ -117,12 +117,13 @@ const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 4;
 const ZOOM_STEP = 0.25;
 const PHOTO_MARKER_RADIUS = 12;
-const PHOTO_MARKER_HIT_PADDING = 4;
-const COMMENT_MARKER_HALF_SIZE = PHOTO_MARKER_RADIUS;
-const COMMENT_MARKER_HIT_PADDING = PHOTO_MARKER_HIT_PADDING;
+const PHOTO_MARKER_HIT_PADDING = 6;
+const COMMENT_MARKER_RADIUS = 12;
+const COMMENT_MARKER_HIT_PADDING = 6;
 type InteractionMode = "select" | "pan";
 
 const containerRef = ref<HTMLDivElement | null>(null);
+const canvasWrapRef = ref<HTMLDivElement | null>(null);
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const loadedImage = ref<HTMLImageElement | null>(null);
 const currentObjectUrl = ref<string | null>(null);
@@ -167,9 +168,9 @@ const caption = computed(() => {
     return "Tap the map and complete 3-point calibration to overlay GPS data.";
   }
   if (interactionMode.value === "pan") {
-    return "Pan mode: drag the map. Switch to Select mode to pick calibration/photo points.";
+    return "Pan mode: drag the map. Use the mouse wheel to zoom. Switch to Select mode to pick calibration/photo points.";
   }
-  return "Select mode: tap map for calibration/photo location. Zoom in and switch to Pan mode to drag.";
+  return "Select mode: tap map for calibration/photo location. Use the mouse wheel to zoom and switch to Pan mode to drag.";
 });
 
 function releaseObjectUrl(): void {
@@ -197,8 +198,18 @@ function clampPanToLimits(): void {
   }
 }
 
-function setZoom(value: number): void {
+function setZoom(value: number, focusCanvasPoint: ImagePoint | null = null): void {
   const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Number(value.toFixed(2))));
+  const image = loadedImage.value;
+
+  let focusImageX: number | null = null;
+  let focusImageY: number | null = null;
+
+  if (image && focusCanvasPoint && drawState.scaleX > 0 && drawState.scaleY > 0) {
+    focusImageX = (focusCanvasPoint.x - drawState.offsetX) / drawState.scaleX;
+    focusImageY = (focusCanvasPoint.y - drawState.offsetY) / drawState.scaleY;
+  }
+
   zoomLevel.value = clamped;
 
   if (zoomLevel.value <= 1) {
@@ -207,6 +218,23 @@ function setZoom(value: number): void {
     if (interactionMode.value === "pan") {
       interactionMode.value = "select";
     }
+
+    drawOverlay();
+    return;
+  }
+
+  if (image && focusCanvasPoint && focusImageX !== null && focusImageY !== null) {
+    const viewportWidth = drawState.width || canvasRef.value?.clientWidth || image.naturalWidth;
+    const viewportHeight = drawState.height || canvasRef.value?.clientHeight || image.naturalHeight;
+    const drawWidth = viewportWidth * zoomLevel.value;
+    const drawHeight = viewportHeight * zoomLevel.value;
+    const baseOffsetX = (viewportWidth - drawWidth) / 2;
+    const baseOffsetY = (viewportHeight - drawHeight) / 2;
+    const scaleX = drawWidth / image.naturalWidth;
+    const scaleY = drawHeight / image.naturalHeight;
+
+    panX.value = focusCanvasPoint.x - baseOffsetX - focusImageX * scaleX;
+    panY.value = focusCanvasPoint.y - baseOffsetY - focusImageY * scaleY;
   }
 
   drawOverlay();
@@ -224,6 +252,30 @@ function resetZoom(): void {
   panX.value = 0;
   panY.value = 0;
   setZoom(1);
+}
+
+function onWheel(event: WheelEvent): void {
+  if (!loadedImage.value) {
+    return;
+  }
+
+  const canvasPoint = getCanvasPointFromClientPosition(event);
+  const zoomFactor = Math.exp(-event.deltaY * 0.0015);
+  if (!Number.isFinite(zoomFactor) || zoomFactor <= 0) {
+    return;
+  }
+
+  setZoom(zoomLevel.value * zoomFactor, canvasPoint);
+}
+
+function onWheelEvent(event: WheelEvent): void {
+  if (!loadedImage.value) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  onWheel(event);
 }
 
 function setInteractionMode(mode: InteractionMode): void {
@@ -259,7 +311,119 @@ function toCanvasRoutePoints(routePoints: RoutePoint[]): ImagePoint[] {
     .filter((point): point is ImagePoint => point !== null);
 }
 
-function getCanvasPointFromPointer(event: PointerEvent): ImagePoint | null {
+function drawRoundedRectPath(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number
+): void {
+  const clampedRadius = Math.max(0, Math.min(radius, width / 2, height / 2));
+
+  context.beginPath();
+  context.moveTo(x + clampedRadius, y);
+  context.lineTo(x + width - clampedRadius, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + clampedRadius);
+  context.lineTo(x + width, y + height - clampedRadius);
+  context.quadraticCurveTo(x + width, y + height, x + width - clampedRadius, y + height);
+  context.lineTo(x + clampedRadius, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - clampedRadius);
+  context.lineTo(x, y + clampedRadius);
+  context.quadraticCurveTo(x, y, x + clampedRadius, y);
+  context.closePath();
+}
+
+function drawPhotoMarker(context: CanvasRenderingContext2D, point: ImagePoint): void {
+  const radius = PHOTO_MARKER_RADIUS;
+
+  context.save();
+
+  context.shadowColor = "rgba(15, 23, 42, 0.32)";
+  context.shadowBlur = 8;
+  context.shadowOffsetY = 2;
+
+  context.fillStyle = "#ef476f";
+  context.beginPath();
+  context.arc(point.x, point.y, radius, 0, Math.PI * 2);
+  context.fill();
+
+  context.shadowColor = "transparent";
+
+  context.lineWidth = 2;
+  context.strokeStyle = "#ffffff";
+  context.stroke();
+
+  const bodyWidth = radius * 1.1;
+  const bodyHeight = radius * 0.72;
+  const bodyX = point.x - bodyWidth / 2;
+  const bodyY = point.y - bodyHeight / 2 + 0.8;
+
+  context.strokeStyle = "#ffffff";
+  context.lineWidth = 1.7;
+  drawRoundedRectPath(context, bodyX, bodyY, bodyWidth, bodyHeight, 2.5);
+  context.stroke();
+
+  const topWidth = radius * 0.36;
+  const topHeight = radius * 0.18;
+  const topX = bodyX + radius * 0.08;
+  const topY = bodyY - topHeight - 1;
+  drawRoundedRectPath(context, topX, topY, topWidth, topHeight, 1);
+  context.stroke();
+
+  context.beginPath();
+  context.arc(point.x, point.y + 0.5, radius * 0.24, 0, Math.PI * 2);
+  context.stroke();
+
+  context.restore();
+}
+
+function drawCommentMarker(context: CanvasRenderingContext2D, point: ImagePoint): void {
+  const radius = COMMENT_MARKER_RADIUS;
+  const bubbleWidth = radius * 1.55;
+  const bubbleHeight = radius * 1.15;
+  const bubbleX = point.x - bubbleWidth / 2;
+  const bubbleY = point.y - bubbleHeight / 2 - 2;
+
+  context.save();
+
+  context.shadowColor = "rgba(15, 23, 42, 0.28)";
+  context.shadowBlur = 8;
+  context.shadowOffsetY = 2;
+
+  context.fillStyle = "#f4a261";
+  drawRoundedRectPath(context, bubbleX, bubbleY, bubbleWidth, bubbleHeight, 4);
+  context.fill();
+
+  context.shadowColor = "transparent";
+
+  context.lineWidth = 2;
+  context.strokeStyle = "#ffffff";
+  context.stroke();
+
+  context.beginPath();
+  context.moveTo(point.x - 3, bubbleY + bubbleHeight - 1);
+  context.lineTo(point.x + 2, bubbleY + bubbleHeight - 1);
+  context.lineTo(point.x - 1, bubbleY + bubbleHeight + 5);
+  context.closePath();
+  context.fillStyle = "#f4a261";
+  context.fill();
+  context.strokeStyle = "#ffffff";
+  context.stroke();
+
+  context.fillStyle = "#ffffff";
+  const dotY = bubbleY + bubbleHeight / 2;
+  const dotRadius = 1.35;
+  [-4, 0, 4].forEach((offset) => {
+    context.beginPath();
+    context.arc(point.x + offset, dotY, dotRadius, 0, Math.PI * 2);
+    context.fill();
+  });
+
+  context.restore();
+}
+
+function getCanvasPointFromClientPosition(event: { clientX: number; clientY: number }): ImagePoint | null {
   if (!canvasRef.value) {
     return null;
   }
@@ -322,7 +486,8 @@ function getCommentsNearCanvasPoint(canvasPoint: ImagePoint): CommentRecord[] {
     return [];
   }
 
-  const hitHalfSize = COMMENT_MARKER_HALF_SIZE + COMMENT_MARKER_HIT_PADDING;
+  const hitRadius = COMMENT_MARKER_RADIUS + COMMENT_MARKER_HIT_PADDING + 2;
+  const hitRadiusSq = hitRadius * hitRadius;
 
   return props.comments.filter((comment) => {
     const point = toCanvasPoint(comment.lat, comment.lng);
@@ -330,7 +495,9 @@ function getCommentsNearCanvasPoint(canvasPoint: ImagePoint): CommentRecord[] {
       return false;
     }
 
-    return Math.abs(canvasPoint.x - point.x) <= hitHalfSize && Math.abs(canvasPoint.y - point.y) <= hitHalfSize;
+    const dx = canvasPoint.x - point.x;
+    const dy = canvasPoint.y - point.y;
+    return dx * dx + dy * dy <= hitRadiusSq;
   });
 }
 
@@ -507,15 +674,12 @@ function drawOverlay(): void {
     });
   }
 
-  context.fillStyle = "#ef476f";
   props.photos.forEach((photo) => {
     const point = toCanvasPoint(photo.lat, photo.lng);
     if (!point) {
       return;
     }
-    context.beginPath();
-    context.arc(point.x, point.y, PHOTO_MARKER_RADIUS, 0, Math.PI * 2);
-    context.fill();
+    drawPhotoMarker(context, point);
   });
 
   if (props.currentPosition) {
@@ -560,13 +724,7 @@ function drawOverlay(): void {
       return;
     }
 
-    context.fillStyle = "#f4a261";
-    context.fillRect(
-      point.x - COMMENT_MARKER_HALF_SIZE,
-      point.y - COMMENT_MARKER_HALF_SIZE,
-      COMMENT_MARKER_HALF_SIZE * 2,
-      COMMENT_MARKER_HALF_SIZE * 2
-    );
+    drawCommentMarker(context, point);
   });
 
   if (props.selectedCommentLocation) {
@@ -622,7 +780,7 @@ function onPointerDown(event: PointerEvent): void {
   }
 
   if (interactionMode.value === "select") {
-    const canvasPoint = getCanvasPointFromPointer(event);
+    const canvasPoint = getCanvasPointFromClientPosition(event);
     if (!canvasPoint) {
       return;
     }
@@ -743,11 +901,19 @@ watch(
 );
 
 onMounted(() => {
+  if (canvasWrapRef.value) {
+    canvasWrapRef.value.addEventListener("wheel", onWheelEvent, { passive: false });
+  }
+
   window.addEventListener("resize", drawOverlay);
   drawOverlay();
 });
 
 onBeforeUnmount(() => {
+  if (canvasWrapRef.value) {
+    canvasWrapRef.value.removeEventListener("wheel", onWheelEvent);
+  }
+
   window.removeEventListener("resize", drawOverlay);
   finishDrag();
   releaseObjectUrl();
