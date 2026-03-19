@@ -7,10 +7,10 @@ export default defineConfig({
     vue(),
     VitePWA({
       registerType: "autoUpdate",
-      includeAssets: ["favicon.svg"],
+      includeAssets: ["rogainizer.png"],
       manifest: {
-        name: "Navlight Mapper",
-        short_name: "NavlightMapper",
+        name: "Rogainizer Planner",
+        short_name: "Rogainizer Planner",
         description: "Offline GPS photo mapper",
         theme_color: "#124559",
         background_color: "#f4f6f8",
@@ -18,9 +18,9 @@ export default defineConfig({
         start_url: "/",
         icons: [
           {
-            src: "favicon.svg",
-            sizes: "any",
-            type: "image/svg+xml"
+            src: "rogainizer.png",
+            sizes: "1024x1024",
+            type: "image/png"
           }
         ]
       },

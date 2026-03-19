@@ -14,8 +14,17 @@
         @pointerdown="onPointerDown"
         @pointermove="onPointerMove"
         @pointerup="onPointerUp"
+        @pointerleave="onPointerLeave"
         @pointercancel="onPointerCancel"
       ></canvas>
+
+      <div
+        v-if="hoverTooltipVisible"
+        class="marker-hover-tooltip"
+        :style="{ left: `${hoverTooltipX}px`, top: `${hoverTooltipY}px` }"
+      >
+        {{ hoverTooltipText }}
+      </div>
 
       <div v-if="mapBlob" class="interaction-controls">
         <button
@@ -31,7 +40,6 @@
           type="button"
           class="mode-button"
           :class="{ active: interactionMode === 'pan' }"
-          :disabled="zoomLevel <= 1"
           @click="setInteractionMode('pan')"
           aria-label="Pan mode"
         >
@@ -97,6 +105,8 @@ const props = defineProps<{
   currentPosition: LivePosition | null;
   selectedPhotoLocation: GeoPoint | null;
   selectedCommentLocation: GeoPoint | null;
+  pickupMarker: GeoPoint | null;
+  dropoffMarker: GeoPoint | null;
   points: TrackPointRecord[];
   photos: PhotoRecord[];
   comments: CommentRecord[];
@@ -120,6 +130,12 @@ const PHOTO_MARKER_RADIUS = 12;
 const PHOTO_MARKER_HIT_PADDING = 6;
 const COMMENT_MARKER_RADIUS = 12;
 const COMMENT_MARKER_HIT_PADDING = 6;
+const ACTION_MARKER_RADIUS = 13;
+const ACTION_MARKER_HIT_PADDING = 6;
+const ROUTE_HOVER_DISTANCE_PX = 8;
+const EARTH_RADIUS_KM = 6371;
+const TOOLTIP_OFFSET_X = 12;
+const TOOLTIP_OFFSET_Y = 14;
 type InteractionMode = "select" | "pan";
 
 const containerRef = ref<HTMLDivElement | null>(null);
@@ -132,6 +148,10 @@ const panX = ref(0);
 const panY = ref(0);
 const isDragging = ref(false);
 const interactionMode = ref<InteractionMode>("select");
+const hoverTooltipVisible = ref(false);
+const hoverTooltipText = ref("");
+const hoverTooltipX = ref(0);
+const hoverTooltipY = ref(0);
 
 const dragState = {
   active: false,
@@ -170,7 +190,7 @@ const caption = computed(() => {
   if (interactionMode.value === "pan") {
     return "Pan mode: drag the map. Use the mouse wheel to zoom. Switch to Select mode to pick calibration/photo points.";
   }
-  return "Select mode: tap map for calibration/photo location. Use the mouse wheel to zoom and switch to Pan mode to drag.";
+  return "Select mode: tap map for actions, markers, and map locations. Use the mouse wheel to zoom and switch to Pan mode to drag.";
 });
 
 function releaseObjectUrl(): void {
@@ -279,14 +299,217 @@ function onWheelEvent(event: WheelEvent): void {
 }
 
 function setInteractionMode(mode: InteractionMode): void {
-  if (mode === "pan" && zoomLevel.value <= 1) {
+  interactionMode.value = mode;
+
+  if (mode === "pan") {
+    if (zoomLevel.value <= 1) {
+      // Entering pan mode at 100% can feel broken, so nudge zoom in slightly.
+      setZoom(1.25);
+    } else {
+      drawOverlay();
+    }
+
+    hideHoverTooltip();
     return;
   }
 
-  interactionMode.value = mode;
-  if (mode === "select") {
-    finishDrag();
+  finishDrag();
+  hideHoverTooltip();
+  drawOverlay();
+}
+
+function hideHoverTooltip(): void {
+  hoverTooltipVisible.value = false;
+  hoverTooltipText.value = "";
+}
+
+function truncateComment(commentText: string): string {
+  const normalized = commentText.trim().replace(/\s+/g, " ");
+  if (normalized.length <= 64) {
+    return normalized;
   }
+
+  return `${normalized.slice(0, 61).trimEnd()}...`;
+}
+
+function isCanvasPointNearMarker(canvasPoint: ImagePoint, markerPoint: ImagePoint, radius: number): boolean {
+  const dx = canvasPoint.x - markerPoint.x;
+  const dy = canvasPoint.y - markerPoint.y;
+  return dx * dx + dy * dy <= radius * radius;
+}
+
+function distanceSquaredToSegment(point: ImagePoint, start: ImagePoint, end: ImagePoint): number {
+  const segmentDx = end.x - start.x;
+  const segmentDy = end.y - start.y;
+  const segmentLengthSq = segmentDx * segmentDx + segmentDy * segmentDy;
+
+  if (segmentLengthSq <= Number.EPSILON) {
+    const dx = point.x - start.x;
+    const dy = point.y - start.y;
+    return dx * dx + dy * dy;
+  }
+
+  const projected =
+    ((point.x - start.x) * segmentDx + (point.y - start.y) * segmentDy) / segmentLengthSq;
+  const t = Math.max(0, Math.min(1, projected));
+  const closestX = start.x + t * segmentDx;
+  const closestY = start.y + t * segmentDy;
+  const dx = point.x - closestX;
+  const dy = point.y - closestY;
+
+  return dx * dx + dy * dy;
+}
+
+function toRadians(value: number): number {
+  return (value * Math.PI) / 180;
+}
+
+function getDistanceKmBetweenRoutePoints(start: RoutePoint, end: RoutePoint): number {
+  const deltaLat = toRadians(end.lat - start.lat);
+  const deltaLng = toRadians(end.lng - start.lng);
+  const startLatRad = toRadians(start.lat);
+  const endLatRad = toRadians(end.lat);
+
+  const a =
+    Math.sin(deltaLat / 2) * Math.sin(deltaLat / 2) +
+    Math.cos(startLatRad) * Math.cos(endLatRad) * Math.sin(deltaLng / 2) * Math.sin(deltaLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return EARTH_RADIUS_KM * c;
+}
+
+function getRouteLengthKm(routePoints: RoutePoint[]): number {
+  if (routePoints.length < 2) {
+    return 0;
+  }
+
+  let lengthKm = 0;
+  for (let index = 1; index < routePoints.length; index += 1) {
+    lengthKm += getDistanceKmBetweenRoutePoints(routePoints[index - 1], routePoints[index]);
+  }
+
+  return lengthKm;
+}
+
+function formatRouteLengthKm(lengthKm: number): string {
+  if (lengthKm >= 10) {
+    return `${lengthKm.toFixed(1)} km`;
+  }
+
+  if (lengthKm >= 1) {
+    return `${lengthKm.toFixed(2)} km`;
+  }
+
+  return `${lengthKm.toFixed(3)} km`;
+}
+
+function getRouteHoverDescription(canvasPoint: ImagePoint): string | null {
+  if (!props.calibration || props.routes.length === 0) {
+    return null;
+  }
+
+  const maxDistanceSq = ROUTE_HOVER_DISTANCE_PX * ROUTE_HOVER_DISTANCE_PX;
+  let closestRoute: ServerRoute | null = null;
+  let closestDistanceSq = Number.POSITIVE_INFINITY;
+
+  props.routes.forEach((route) => {
+    const routePoints = toCanvasRoutePoints(route.points);
+    if (routePoints.length < 2) {
+      return;
+    }
+
+    for (let index = 1; index < routePoints.length; index += 1) {
+      const distanceSq = distanceSquaredToSegment(canvasPoint, routePoints[index - 1], routePoints[index]);
+      if (distanceSq <= maxDistanceSq && distanceSq < closestDistanceSq) {
+        closestDistanceSq = distanceSq;
+        closestRoute = route;
+      }
+    }
+  });
+
+  if (!closestRoute) {
+    return null;
+  }
+
+  const routeLengthText = formatRouteLengthKm(getRouteLengthKm(closestRoute.points));
+  return `Route: ${closestRoute.name} (${routeLengthText})`;
+}
+
+function getHoverMarkerDescription(canvasPoint: ImagePoint): string | null {
+  const pickupPoint = props.pickupMarker ? toCanvasPoint(props.pickupMarker.lat, props.pickupMarker.lng) : null;
+  if (
+    pickupPoint &&
+    isCanvasPointNearMarker(canvasPoint, pickupPoint, ACTION_MARKER_RADIUS + ACTION_MARKER_HIT_PADDING)
+  ) {
+    return "Pickup marker (red cross)";
+  }
+
+  const dropoffPoint = props.dropoffMarker ? toCanvasPoint(props.dropoffMarker.lat, props.dropoffMarker.lng) : null;
+  if (
+    dropoffPoint &&
+    isCanvasPointNearMarker(canvasPoint, dropoffPoint, ACTION_MARKER_RADIUS + ACTION_MARKER_HIT_PADDING)
+  ) {
+    return "Drop-off marker (green tick)";
+  }
+
+  const hitComments = getCommentsNearCanvasPoint(canvasPoint);
+  const hitPhotos = getPhotosNearCanvasPoint(canvasPoint);
+
+  if (hitComments.length > 0 && hitPhotos.length > 0) {
+    return `${hitPhotos.length} photo${hitPhotos.length === 1 ? "" : "s"}, ${hitComments.length} comment${
+      hitComments.length === 1 ? "" : "s"
+    }`;
+  }
+
+  if (hitComments.length > 1) {
+    return `${hitComments.length} comments`;
+  }
+
+  if (hitComments.length === 1) {
+    return `Comment: ${truncateComment(hitComments[0].commentText)}`;
+  }
+
+  if (hitPhotos.length > 1) {
+    return `${hitPhotos.length} photos`;
+  }
+
+  if (hitPhotos.length === 1) {
+    return `Photo: ${hitPhotos[0].fileName}`;
+  }
+
+  const routeDescription = getRouteHoverDescription(canvasPoint);
+  if (routeDescription) {
+    return routeDescription;
+  }
+
+  return null;
+}
+
+function updateHoverTooltip(event: PointerEvent): void {
+  if (!loadedImage.value || interactionMode.value !== "select" || event.pointerType !== "mouse") {
+    hideHoverTooltip();
+    return;
+  }
+
+  const canvasPoint = getCanvasPointFromClientPosition(event);
+  if (!canvasPoint) {
+    hideHoverTooltip();
+    return;
+  }
+
+  const description = getHoverMarkerDescription(canvasPoint);
+  if (!description) {
+    hideHoverTooltip();
+    return;
+  }
+
+  const canvasWidth = drawState.width || canvasRef.value?.clientWidth || 0;
+  const canvasHeight = drawState.height || canvasRef.value?.clientHeight || 0;
+
+  hoverTooltipText.value = description;
+  hoverTooltipX.value = Math.max(6, Math.min(canvasPoint.x + TOOLTIP_OFFSET_X, canvasWidth - 6));
+  hoverTooltipY.value = Math.max(6, Math.min(canvasPoint.y + TOOLTIP_OFFSET_Y, canvasHeight - 6));
+  hoverTooltipVisible.value = true;
 }
 
 function toCanvasPoint(lat: number, lng: number): ImagePoint | null {
@@ -419,6 +642,66 @@ function drawCommentMarker(context: CanvasRenderingContext2D, point: ImagePoint)
     context.arc(point.x + offset, dotY, dotRadius, 0, Math.PI * 2);
     context.fill();
   });
+
+  context.restore();
+}
+
+function drawDropoffMarker(context: CanvasRenderingContext2D, point: ImagePoint): void {
+  context.save();
+
+  context.shadowColor = "rgba(15, 23, 42, 0.28)";
+  context.shadowBlur = 8;
+  context.shadowOffsetY = 2;
+
+  context.fillStyle = "#2a9d47";
+  context.beginPath();
+  context.arc(point.x, point.y, ACTION_MARKER_RADIUS, 0, Math.PI * 2);
+  context.fill();
+
+  context.shadowColor = "transparent";
+  context.lineWidth = 2;
+  context.strokeStyle = "#ffffff";
+  context.stroke();
+
+  context.strokeStyle = "#ffffff";
+  context.lineWidth = 3;
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  context.beginPath();
+  context.moveTo(point.x - 5, point.y + 0.5);
+  context.lineTo(point.x - 1, point.y + 4.5);
+  context.lineTo(point.x + 6, point.y - 4);
+  context.stroke();
+
+  context.restore();
+}
+
+function drawPickupMarker(context: CanvasRenderingContext2D, point: ImagePoint): void {
+  context.save();
+
+  context.shadowColor = "rgba(15, 23, 42, 0.28)";
+  context.shadowBlur = 8;
+  context.shadowOffsetY = 2;
+
+  context.fillStyle = "#d62839";
+  context.beginPath();
+  context.arc(point.x, point.y, ACTION_MARKER_RADIUS, 0, Math.PI * 2);
+  context.fill();
+
+  context.shadowColor = "transparent";
+  context.lineWidth = 2;
+  context.strokeStyle = "#ffffff";
+  context.stroke();
+
+  context.strokeStyle = "#ffffff";
+  context.lineWidth = 3;
+  context.lineCap = "round";
+  context.beginPath();
+  context.moveTo(point.x - 5, point.y - 5);
+  context.lineTo(point.x + 5, point.y + 5);
+  context.moveTo(point.x + 5, point.y - 5);
+  context.lineTo(point.x - 5, point.y + 5);
+  context.stroke();
 
   context.restore();
 }
@@ -699,7 +982,7 @@ function drawOverlay(): void {
     }
   }
 
-  if (props.selectedPhotoLocation) {
+  if (interactionMode.value === "select" && props.selectedPhotoLocation) {
     const selectedPoint = toCanvasPoint(props.selectedPhotoLocation.lat, props.selectedPhotoLocation.lng);
     if (selectedPoint) {
       context.strokeStyle = "#ff9f1c";
@@ -727,7 +1010,21 @@ function drawOverlay(): void {
     drawCommentMarker(context, point);
   });
 
-  if (props.selectedCommentLocation) {
+  if (props.dropoffMarker) {
+    const dropoffPoint = toCanvasPoint(props.dropoffMarker.lat, props.dropoffMarker.lng);
+    if (dropoffPoint) {
+      drawDropoffMarker(context, dropoffPoint);
+    }
+  }
+
+  if (props.pickupMarker) {
+    const pickupPoint = toCanvasPoint(props.pickupMarker.lat, props.pickupMarker.lng);
+    if (pickupPoint) {
+      drawPickupMarker(context, pickupPoint);
+    }
+  }
+
+  if (interactionMode.value === "select" && props.selectedCommentLocation) {
     const selectedPoint = toCanvasPoint(props.selectedCommentLocation.lat, props.selectedCommentLocation.lng);
     if (selectedPoint) {
       context.strokeStyle = "#2563eb";
@@ -778,6 +1075,8 @@ function onPointerDown(event: PointerEvent): void {
   if (!loadedImage.value || !canvasRef.value) {
     return;
   }
+
+  hideHoverTooltip();
 
   if (interactionMode.value === "select") {
     const canvasPoint = getCanvasPointFromClientPosition(event);
@@ -841,16 +1140,22 @@ function onPointerDown(event: PointerEvent): void {
 }
 
 function onPointerMove(event: PointerEvent): void {
-  if (!dragState.active || event.pointerId !== dragState.pointerId) {
+  if (dragState.active && event.pointerId === dragState.pointerId) {
+    const deltaX = event.clientX - dragState.startClientX;
+    const deltaY = event.clientY - dragState.startClientY;
+
+    panX.value = dragState.startPanX + deltaX;
+    panY.value = dragState.startPanY + deltaY;
+    drawOverlay();
     return;
   }
 
-  const deltaX = event.clientX - dragState.startClientX;
-  const deltaY = event.clientY - dragState.startClientY;
+  if (interactionMode.value === "select") {
+    updateHoverTooltip(event);
+    return;
+  }
 
-  panX.value = dragState.startPanX + deltaX;
-  panY.value = dragState.startPanY + deltaY;
-  drawOverlay();
+  hideHoverTooltip();
 }
 
 function onPointerUp(event: PointerEvent): void {
@@ -867,6 +1172,10 @@ function onPointerCancel(event: PointerEvent): void {
   }
 
   finishDrag();
+}
+
+function onPointerLeave(): void {
+  hideHoverTooltip();
 }
 
 watch(
@@ -887,6 +1196,8 @@ watch(
     props.currentPosition,
     props.selectedPhotoLocation,
     props.selectedCommentLocation,
+    props.pickupMarker,
+    props.dropoffMarker,
     props.points,
     props.photos,
     props.comments,
@@ -914,6 +1225,7 @@ onBeforeUnmount(() => {
     canvasWrapRef.value.removeEventListener("wheel", onWheelEvent);
   }
 
+  hideHoverTooltip();
   window.removeEventListener("resize", drawOverlay);
   finishDrag();
   releaseObjectUrl();
@@ -1008,6 +1320,21 @@ onBeforeUnmount(() => {
 .zoom-button:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+.marker-hover-tooltip {
+  position: absolute;
+  z-index: 4;
+  max-width: min(76vw, 280px);
+  padding: 0.34rem 0.52rem;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.92);
+  color: #ffffff;
+  font-size: 0.76rem;
+  line-height: 1.28;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.32);
+  pointer-events: none;
+  transform: translate3d(0, 0, 0);
 }
 
 .map-caption {

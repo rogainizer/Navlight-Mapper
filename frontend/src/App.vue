@@ -1,7 +1,7 @@
 <template>
   <div class="app-shell">
     <header class="app-header">
-      <h1>Navlight Mapper</h1>
+      <h1>Rogainizer Planner</h1>
       <div class="header-meta">
         <span><strong>Network:</strong> {{ online ? "Online" : "Offline" }}</span>
         <span><strong>GPS:</strong> {{ currentPosition ? `±${Math.round(currentPosition.accuracy)}m` : "Waiting" }}</span>
@@ -22,6 +22,8 @@
           :current-position="currentPosition"
           :selected-photo-location="photoLocationMode === 'map' ? selectedPhotoLocation : null"
           :selected-comment-location="commentLocationMode === 'map' ? selectedCommentLocation : null"
+          :pickup-marker="pickupMarkerLocation"
+          :dropoff-marker="dropoffMarkerLocation"
           :points="mapPoints"
           :photos="mapPhotos"
           :comments="mapComments"
@@ -187,6 +189,44 @@
     </main>
 
     <Teleport to="body">
+      <div v-if="mapClickDialogVisible" class="photo-dialog-backdrop" @click.self="closeMapClickDialog">
+        <section class="photo-dialog map-click-dialog" role="dialog" aria-modal="true" aria-labelledby="map-click-dialog-title">
+          <div class="photo-dialog-header">
+            <h2 id="map-click-dialog-title">Map Actions</h2>
+            <button
+              type="button"
+              class="photo-dialog-close"
+              @click="closeMapClickDialog"
+              aria-label="Close map actions dialog"
+            >
+              Close
+            </button>
+          </div>
+
+          <p v-if="mapClickGeoPoint" class="map-click-location">
+            Selected point: {{ mapClickGeoPoint.lat.toFixed(6) }}, {{ mapClickGeoPoint.lng.toFixed(6) }}
+          </p>
+          <p class="map-click-summary">
+            Photos near point: {{ mapClickNearbyPhotos.length }} | Comments near point: {{ mapClickNearbyComments.length }}
+          </p>
+
+          <div class="map-click-actions">
+            <button type="button" class="map-click-action dropoff" @click="toggleDropoffMarker">
+              {{ dropoffActionLabel }}
+            </button>
+            <button type="button" class="map-click-action pickup" @click="togglePickupMarker">
+              {{ pickupActionLabel }}
+            </button>
+            <button type="button" class="map-click-action" @click="openMapClickPhotoTools">Photos: Edit/Add/Delete</button>
+            <button type="button" class="map-click-action" @click="openMapClickCommentTools">
+              Comments: Edit/Add/Delete
+            </button>
+          </div>
+        </section>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
       <div v-if="photoDialogVisible" class="photo-dialog-backdrop" @click.self="closePhotoDialog">
         <section class="photo-dialog" role="dialog" aria-modal="true" aria-labelledby="photo-dialog-title">
           <div class="photo-dialog-header">
@@ -201,6 +241,34 @@
             </button>
           </div>
 
+          <div v-if="photoDialogAddLocation" class="photo-dialog-tools">
+            <p class="sync-state">
+              Add photos at: {{ photoDialogAddLocation.lat.toFixed(6) }}, {{ photoDialogAddLocation.lng.toFixed(6) }}
+            </p>
+            <div class="photo-dialog-tool-actions">
+              <label class="photo-dialog-tool-button" :class="{ disabled: !canCapturePhoto || deletingPhoto }">
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  :disabled="!canCapturePhoto || deletingPhoto"
+                  @change="handlePhotoDialogFileInput"
+                />
+                Capture At This Point
+              </label>
+              <label class="photo-dialog-tool-button secondary" :class="{ disabled: !canCapturePhoto || deletingPhoto }">
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  :disabled="!canCapturePhoto || deletingPhoto"
+                  @change="handlePhotoDialogFileInput"
+                />
+                Add Local Files
+              </label>
+            </div>
+          </div>
+
           <div v-if="selectedDialogPhoto" class="photo-preview-panel">
             <img
               class="photo-preview-image"
@@ -210,10 +278,19 @@
             <div class="photo-preview-meta">
               <strong>{{ selectedDialogPhoto.fileName }}</strong>
               <span>{{ formatCapturedAt(selectedDialogPhoto.capturedAt) }}</span>
+              <label class="photo-replace-button" :class="{ disabled: deletingPhoto || updatingPhoto }">
+                <input
+                  type="file"
+                  accept="image/*"
+                  :disabled="deletingPhoto || updatingPhoto"
+                  @change="handlePhotoReplaceInput"
+                />
+                {{ updatingPhoto ? "Updating..." : "Replace Photo" }}
+              </label>
               <button
                 type="button"
                 class="photo-delete-button"
-                :disabled="deletingPhoto"
+                :disabled="deletingPhoto || updatingPhoto"
                 @click="deleteSelectedDialogPhoto"
               >
                 {{ deletingPhoto ? "Deleting..." : "Delete Photo" }}
@@ -253,6 +330,34 @@
             >
               Close
             </button>
+          </div>
+
+          <div v-if="commentDialogAddLocation" class="comment-preview-panel">
+            <label class="comment-edit-label">
+              Add comment at selected point
+              <textarea
+                v-model="commentDialogDraftText"
+                rows="3"
+                maxlength="500"
+                :disabled="savingDialogComment || savingCommentEdit || deletingComment"
+              ></textarea>
+            </label>
+            <div class="comment-preview-meta">
+              <span>
+                Lat/Lng:
+                {{ formatCoordinate(commentDialogAddLocation.lat) }},
+                {{ formatCoordinate(commentDialogAddLocation.lng) }}
+              </span>
+            </div>
+            <div class="comment-preview-actions">
+              <button
+                type="button"
+                :disabled="!canSaveDialogComment || savingCommentEdit || deletingComment"
+                @click="addCommentFromDialog"
+              >
+                {{ savingDialogComment ? "Adding..." : "Add Comment" }}
+              </button>
+            </div>
           </div>
 
           <div v-if="selectedDialogComment" class="comment-preview-panel">
@@ -370,7 +475,7 @@ import MapCanvas from "./components/MapCanvas.vue";
 import MapManagerPanel from "./components/MapManagerPanel.vue";
 import PhotoCapturePanel from "./components/PhotoCapturePanel.vue";
 import TrackingControls from "./components/TrackingControls.vue";
-import { buildCalibration, imageToGeoPoint } from "./services/calibration";
+import { buildCalibration, geoToImagePoint, imageToGeoPoint } from "./services/calibration";
 import { optimizePhotoForStorage } from "./services/photoProcessing";
 import {
   clearLocalMapSessionData,
@@ -428,9 +533,14 @@ import type {
 
 const ACTIVE_MAP_KEY = "navlight-active-map-id";
 const CLIENT_ID_KEY = "navlight-client-id";
+const MAP_MARKERS_KEY = "navlight-map-markers-v1";
 const MIN_POINT_INTERVAL_MS = 2500;
 const PHOTO_MAX_EDGE_PX = 1280;
 const PHOTO_JPEG_QUALITY = 0.75;
+const PHOTO_MARKER_HIT_RADIUS_PX = 18;
+const COMMENT_MARKER_HIT_RADIUS_PX = 20;
+const MARKER_MATCH_DISTANCE_METERS = 10;
+const EARTH_RADIUS_METERS = 6371000;
 
 type PhotoDialogItem = {
   id: string;
@@ -446,6 +556,11 @@ type CommentDialogItem = {
   lat: number;
   lng: number;
   syncStatus: CommentRecord["syncStatus"];
+};
+
+type MapMarkerState = {
+  pickup: GeoPoint | null;
+  dropoff: GeoPoint | null;
 };
 
 const offlineMaps = ref<MapRecord[]>([]);
@@ -471,12 +586,22 @@ const pendingCounts = ref<PendingCounts>({ points: 0, photos: 0, comments: 0 });
 const syncing = ref(false);
 const statusMessage = ref("");
 const syncSummary = ref("No sync run yet.");
+const mapClickDialogVisible = ref(false);
+const mapClickGeoPoint = ref<GeoPoint | null>(null);
+const mapClickNearbyPhotos = ref<PhotoRecord[]>([]);
+const mapClickNearbyComments = ref<CommentRecord[]>([]);
+const pickupMarkerLocation = ref<GeoPoint | null>(null);
+const dropoffMarkerLocation = ref<GeoPoint | null>(null);
 const photoDialogVisible = ref(false);
 const photoDialogItems = ref<PhotoDialogItem[]>([]);
 const selectedDialogPhotoId = ref<string | null>(null);
+const photoDialogAddLocation = ref<GeoPoint | null>(null);
 const commentDialogVisible = ref(false);
 const commentDialogItems = ref<CommentDialogItem[]>([]);
 const selectedDialogCommentId = ref<string | null>(null);
+const commentDialogAddLocation = ref<GeoPoint | null>(null);
+const commentDialogDraftText = ref("");
+const savingDialogComment = ref(false);
 const overlapMarkerDialogVisible = ref(false);
 const overlapMarkerPhotos = ref<PhotoRecord[]>([]);
 const overlapMarkerComments = ref<CommentRecord[]>([]);
@@ -485,6 +610,7 @@ const commentEditText = ref("");
 const savingCommentEdit = ref(false);
 const deletingComment = ref(false);
 const deletingPhoto = ref(false);
+const updatingPhoto = ref(false);
 const commentText = ref("");
 const routeName = ref("");
 const routeColor = ref("#ff7f11");
@@ -495,6 +621,7 @@ const deletingRouteId = ref<string | null>(null);
 
 let lastRecordedPointMs = 0;
 let stopLocationWatch: (() => void) | null = null;
+let restoringPersistedMarkers = false;
 
 const activeMap = computed(() => {
   if (draftMap.value && activeMapId.value === draftMap.value.id) {
@@ -511,7 +638,7 @@ const canUseMapPhotoSelection = computed(() => Boolean(activeMap.value?.calibrat
 const canCreateRouteOnCurrentMap = computed(
   () => Boolean(online.value && activeMapId.value && activeMap.value?.calibration && !isDraftActiveMap.value)
 );
-const suppressMarkerDialogs = computed(() => routeCreateEnabled.value);
+const suppressMarkerDialogs = computed(() => routeCreateEnabled.value || Boolean(activeMap.value?.calibration));
 const mapLocationSelectionActive = computed(
   () => commentLocationMode.value === "map" || photoLocationMode.value === "map"
 );
@@ -581,6 +708,14 @@ const canDeleteSelectedComment = computed(() => {
 
   return true;
 });
+const canSaveDialogComment = computed(() => {
+  if (!commentDialogAddLocation.value || !activeMapId.value || isDraftActiveMap.value || savingDialogComment.value) {
+    return false;
+  }
+
+  const trimmed = commentDialogDraftText.value.trim();
+  return trimmed.length > 0 && trimmed.length <= 500;
+});
 
 const canCapturePhoto = computed(() => {
   if (!activeMap.value) {
@@ -635,6 +770,34 @@ const commentDisabledReason = computed(() => {
   }
   return "";
 });
+const dropoffMarkerAtSelectedPoint = computed(() => markerAtMapClickPoint(dropoffMarkerLocation.value));
+const pickupMarkerAtSelectedPoint = computed(() => markerAtMapClickPoint(pickupMarkerLocation.value));
+const dropoffActionLabel = computed(() => {
+  if (dropoffMarkerAtSelectedPoint.value) {
+    return "Remove Drop-off Marker";
+  }
+
+  if (dropoffMarkerLocation.value) {
+    return "Move Drop-off Marker Here";
+  }
+
+  return "Add Drop-off Marker (green tick)";
+});
+const pickupActionLabel = computed(() => {
+  if (pickupMarkerAtSelectedPoint.value) {
+    return "Remove Pickup Marker";
+  }
+
+  if (dropoffMarkerLocation.value) {
+    return "Place Pickup On Drop-off (red cross)";
+  }
+
+  if (pickupMarkerLocation.value) {
+    return "Move Pickup Marker Here";
+  }
+
+  return "Add Pickup Marker (red cross)";
+});
 
 const clientId = getOrCreateClientId();
 
@@ -646,6 +809,118 @@ function getOrCreateClientId(): string {
   const generated = crypto.randomUUID();
   localStorage.setItem(CLIENT_ID_KEY, generated);
   return generated;
+}
+
+function toStoredGeoPoint(value: unknown): GeoPoint | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const candidate = value as { lat?: unknown; lng?: unknown; accuracy?: unknown };
+  if (typeof candidate.lat !== "number" || !Number.isFinite(candidate.lat)) {
+    return null;
+  }
+  if (typeof candidate.lng !== "number" || !Number.isFinite(candidate.lng)) {
+    return null;
+  }
+
+  const accuracy =
+    typeof candidate.accuracy === "number" && Number.isFinite(candidate.accuracy) ? candidate.accuracy : 0;
+
+  return {
+    lat: candidate.lat,
+    lng: candidate.lng,
+    accuracy
+  };
+}
+
+function readPersistedMapMarkers(): Record<string, MapMarkerState> {
+  const raw = localStorage.getItem(MAP_MARKERS_KEY);
+  if (!raw) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    const normalized: Record<string, MapMarkerState> = {};
+    Object.entries(parsed as Record<string, unknown>).forEach(([mapId, markerValue]) => {
+      if (!markerValue || typeof markerValue !== "object" || Array.isArray(markerValue)) {
+        return;
+      }
+
+      const markerState = markerValue as { pickup?: unknown; dropoff?: unknown };
+      const pickup = toStoredGeoPoint(markerState.pickup);
+      const dropoff = toStoredGeoPoint(markerState.dropoff);
+
+      if (!pickup && !dropoff) {
+        return;
+      }
+
+      normalized[mapId] = {
+        pickup,
+        dropoff
+      };
+    });
+
+    return normalized;
+  } catch {
+    return {};
+  }
+}
+
+function writePersistedMapMarkers(mapMarkers: Record<string, MapMarkerState>): void {
+  const entries = Object.entries(mapMarkers);
+  if (entries.length === 0) {
+    localStorage.removeItem(MAP_MARKERS_KEY);
+    return;
+  }
+
+  localStorage.setItem(MAP_MARKERS_KEY, JSON.stringify(mapMarkers));
+}
+
+function restoreMapMarkersForMap(mapId: string | null): void {
+  restoringPersistedMarkers = true;
+  try {
+    if (!mapId) {
+      pickupMarkerLocation.value = null;
+      dropoffMarkerLocation.value = null;
+      return;
+    }
+
+    const persistedMarkers = readPersistedMapMarkers();
+    const markerState = persistedMarkers[mapId];
+    pickupMarkerLocation.value = markerState?.pickup ? cloneGeoPoint(markerState.pickup) : null;
+    dropoffMarkerLocation.value = markerState?.dropoff ? cloneGeoPoint(markerState.dropoff) : null;
+  } finally {
+    restoringPersistedMarkers = false;
+  }
+}
+
+function persistMapMarkersForActiveMap(): void {
+  if (restoringPersistedMarkers) {
+    return;
+  }
+
+  const mapId = activeMapId.value;
+  if (!mapId) {
+    return;
+  }
+
+  const persistedMarkers = readPersistedMapMarkers();
+  const pickup = pickupMarkerLocation.value ? cloneGeoPoint(pickupMarkerLocation.value) : null;
+  const dropoff = dropoffMarkerLocation.value ? cloneGeoPoint(dropoffMarkerLocation.value) : null;
+
+  if (!pickup && !dropoff) {
+    delete persistedMarkers[mapId];
+  } else {
+    persistedMarkers[mapId] = { pickup, dropoff };
+  }
+
+  writePersistedMapMarkers(persistedMarkers);
 }
 
 function setActiveMapId(mapId: string | null): void {
@@ -674,6 +949,7 @@ function confirmLocalDataResetForNewMap(): boolean {
 }
 
 async function clearLocalBrowserDataForNewMap(): Promise<void> {
+  closeMapClickDialog();
   closePhotoDialog();
   closeCommentDialog();
   closeOverlapMarkerDialog();
@@ -686,6 +962,8 @@ async function clearLocalBrowserDataForNewMap(): Promise<void> {
   commentLocationMode.value = "current";
   selectedPhotoLocation.value = null;
   selectedCommentLocation.value = null;
+  pickupMarkerLocation.value = null;
+  dropoffMarkerLocation.value = null;
   commentText.value = "";
   lastImageClick.value = null;
 
@@ -963,6 +1241,178 @@ function onCurrentPositionCoverageChange(isOnMap: boolean | null): void {
   defaultMapSelectionWhenCurrentGpsOffMap();
 }
 
+function cloneGeoPoint(point: GeoPoint): GeoPoint {
+  return {
+    lat: point.lat,
+    lng: point.lng,
+    accuracy: point.accuracy
+  };
+}
+
+function toRadians(value: number): number {
+  return (value * Math.PI) / 180;
+}
+
+function distanceMetersBetweenPoints(start: GeoPoint, end: GeoPoint): number {
+  const deltaLat = toRadians(end.lat - start.lat);
+  const deltaLng = toRadians(end.lng - start.lng);
+  const startLatRad = toRadians(start.lat);
+  const endLatRad = toRadians(end.lat);
+
+  const a =
+    Math.sin(deltaLat / 2) * Math.sin(deltaLat / 2) +
+    Math.cos(startLatRad) * Math.cos(endLatRad) * Math.sin(deltaLng / 2) * Math.sin(deltaLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return EARTH_RADIUS_METERS * c;
+}
+
+function markerAtMapClickPoint(marker: GeoPoint | null): boolean {
+  if (!marker || !mapClickGeoPoint.value) {
+    return false;
+  }
+
+  return distanceMetersBetweenPoints(marker, mapClickGeoPoint.value) <= MARKER_MATCH_DISTANCE_METERS;
+}
+
+function getPhotosNearImagePoint(imagePoint: ImagePoint): PhotoRecord[] {
+  const calibration = activeMap.value?.calibration;
+  if (!calibration || mapPhotos.value.length === 0) {
+    return [];
+  }
+
+  const hitRadiusSq = PHOTO_MARKER_HIT_RADIUS_PX * PHOTO_MARKER_HIT_RADIUS_PX;
+  return mapPhotos.value.filter((photo) => {
+    const projected = geoToImagePoint(calibration, photo.lat, photo.lng);
+    if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y)) {
+      return false;
+    }
+
+    const dx = imagePoint.x - projected.x;
+    const dy = imagePoint.y - projected.y;
+    return dx * dx + dy * dy <= hitRadiusSq;
+  });
+}
+
+function getCommentsNearImagePoint(imagePoint: ImagePoint): CommentRecord[] {
+  const calibration = activeMap.value?.calibration;
+  if (!calibration || mapComments.value.length === 0) {
+    return [];
+  }
+
+  const hitRadiusSq = COMMENT_MARKER_HIT_RADIUS_PX * COMMENT_MARKER_HIT_RADIUS_PX;
+  return mapComments.value.filter((comment) => {
+    const projected = geoToImagePoint(calibration, comment.lat, comment.lng);
+    if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y)) {
+      return false;
+    }
+
+    const dx = imagePoint.x - projected.x;
+    const dy = imagePoint.y - projected.y;
+    return dx * dx + dy * dy <= hitRadiusSq;
+  });
+}
+
+function closeMapClickDialog(): void {
+  mapClickDialogVisible.value = false;
+  mapClickGeoPoint.value = null;
+  mapClickNearbyPhotos.value = [];
+  mapClickNearbyComments.value = [];
+}
+
+function openMapClickDialog(imagePoint: ImagePoint, geoPoint: GeoPoint): void {
+  closePhotoDialog();
+  closeCommentDialog();
+  closeOverlapMarkerDialog();
+
+  mapClickGeoPoint.value = cloneGeoPoint(geoPoint);
+  mapClickNearbyPhotos.value = getPhotosNearImagePoint(imagePoint);
+  mapClickNearbyComments.value = getCommentsNearImagePoint(imagePoint);
+  mapClickDialogVisible.value = true;
+}
+
+function toggleDropoffMarker(): void {
+  const selectedPoint = mapClickGeoPoint.value;
+  if (!selectedPoint) {
+    return;
+  }
+
+  const hadDropoffMarker = Boolean(dropoffMarkerLocation.value);
+
+  if (dropoffMarkerAtSelectedPoint.value) {
+    dropoffMarkerLocation.value = null;
+    statusMessage.value = "Drop-off marker removed.";
+    return;
+  }
+
+  dropoffMarkerLocation.value = cloneGeoPoint(selectedPoint);
+  statusMessage.value = hadDropoffMarker ? "Drop-off marker moved." : "Drop-off marker set.";
+}
+
+function togglePickupMarker(): void {
+  const selectedPoint = mapClickGeoPoint.value;
+  if (!selectedPoint) {
+    return;
+  }
+
+  const hadPickupMarker = Boolean(pickupMarkerLocation.value);
+
+  if (pickupMarkerAtSelectedPoint.value) {
+    pickupMarkerLocation.value = null;
+    statusMessage.value = "Pickup marker removed.";
+    return;
+  }
+
+  if (dropoffMarkerLocation.value) {
+    pickupMarkerLocation.value = cloneGeoPoint(dropoffMarkerLocation.value);
+    statusMessage.value = "Pickup marker set on drop-off marker.";
+    return;
+  }
+
+  pickupMarkerLocation.value = cloneGeoPoint(selectedPoint);
+  statusMessage.value = hadPickupMarker ? "Pickup marker moved." : "Pickup marker set.";
+}
+
+function openMapClickPhotoTools(): void {
+  const selectedPoint = mapClickGeoPoint.value;
+  if (!selectedPoint) {
+    return;
+  }
+
+  photoLocationMode.value = "map";
+  selectedPhotoLocation.value = cloneGeoPoint(selectedPoint);
+
+  const nearbyPhotos = [...mapClickNearbyPhotos.value];
+  closeMapClickDialog();
+  openPhotoDialog(nearbyPhotos, selectedPoint);
+
+  if (nearbyPhotos.length > 0) {
+    statusMessage.value = "Photo tools opened for the selected map point.";
+  } else {
+    statusMessage.value = "Photo tools opened. Capture or choose local files to add photos at this point.";
+  }
+}
+
+function openMapClickCommentTools(): void {
+  const selectedPoint = mapClickGeoPoint.value;
+  if (!selectedPoint) {
+    return;
+  }
+
+  commentLocationMode.value = "map";
+  selectedCommentLocation.value = cloneGeoPoint(selectedPoint);
+
+  const nearbyComments = [...mapClickNearbyComments.value];
+  closeMapClickDialog();
+  openCommentDialog(nearbyComments, selectedPoint);
+
+  if (nearbyComments.length > 0) {
+    statusMessage.value = "Comment tools opened for the selected map point.";
+  } else {
+    statusMessage.value = "Comment tools opened. Add a new comment for this point.";
+  }
+}
+
 function onMapClick(point: ImagePoint): void {
   lastImageClick.value = point;
 
@@ -990,44 +1440,38 @@ function onMapClick(point: ImagePoint): void {
     return;
   }
 
+  if (!activeMap.value?.calibration) {
+    return;
+  }
+
   const selectingCommentOnMap = commentLocationMode.value === "map";
   const selectingPhotoOnMap = photoLocationMode.value === "map";
 
-  if (!selectingCommentOnMap && !selectingPhotoOnMap) {
-    return;
-  }
-
-  if (!activeMap.value?.calibration) {
-    statusMessage.value = "Calibrate the map before selecting map-based locations.";
-    return;
-  }
-
   try {
     const geoPoint = imageToGeoPoint(activeMap.value.calibration, point.x, point.y);
+    const mapPoint: GeoPoint = {
+      lat: geoPoint.lat,
+      lng: geoPoint.lng,
+      accuracy: 0
+    };
 
     if (selectingPhotoOnMap) {
-      selectedPhotoLocation.value = {
-        lat: geoPoint.lat,
-        lng: geoPoint.lng,
-        accuracy: 0
-      };
+      selectedPhotoLocation.value = cloneGeoPoint(mapPoint);
     }
 
     if (selectingCommentOnMap) {
-      selectedCommentLocation.value = {
-        lat: geoPoint.lat,
-        lng: geoPoint.lng,
-        accuracy: 0
-      };
+      selectedCommentLocation.value = cloneGeoPoint(mapPoint);
     }
 
     if (selectingPhotoOnMap && selectingCommentOnMap) {
       statusMessage.value = "Photo and comment locations selected on map.";
     } else if (selectingPhotoOnMap) {
       statusMessage.value = "Photo location selected on map.";
-    } else {
+    } else if (selectingCommentOnMap) {
       statusMessage.value = "Comment location selected on map.";
     }
+
+    openMapClickDialog(point, mapPoint);
   } catch (error) {
     statusMessage.value = error instanceof Error ? error.message : "Unable to convert map click to location.";
   }
@@ -1089,8 +1533,10 @@ function removeCommentDialogItem(commentId: string): void {
   }
 
   if (commentDialogItems.value.length === 0) {
-    commentDialogVisible.value = false;
     selectedDialogCommentId.value = null;
+    if (!commentDialogAddLocation.value) {
+      commentDialogVisible.value = false;
+    }
   }
 }
 
@@ -1122,7 +1568,9 @@ function removePhotoDialogItem(photoId: string): void {
   }
 
   if (photoDialogItems.value.length === 0) {
-    photoDialogVisible.value = false;
+    if (!photoDialogAddLocation.value) {
+      photoDialogVisible.value = false;
+    }
   }
 }
 
@@ -1150,9 +1598,99 @@ async function deleteSelectedDialogPhoto(): Promise<void> {
   }
 }
 
+async function handlePhotoDialogFileInput(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const files = input.files ? Array.from(input.files) : [];
+  input.value = "";
+
+  if (files.length === 0) {
+    return;
+  }
+
+  if (!canCapturePhoto.value) {
+    statusMessage.value = captureDisabledReason.value || "Unable to add photos at this location.";
+    return;
+  }
+
+  const addLocation = photoDialogAddLocation.value ? cloneGeoPoint(photoDialogAddLocation.value) : null;
+
+  try {
+    await capturePhotos(files);
+
+    if (!addLocation || !activeMap.value?.calibration) {
+      return;
+    }
+
+    const imagePoint = geoToImagePoint(activeMap.value.calibration, addLocation.lat, addLocation.lng);
+    if (!Number.isFinite(imagePoint.x) || !Number.isFinite(imagePoint.y)) {
+      return;
+    }
+
+    openPhotoDialog(getPhotosNearImagePoint({ x: imagePoint.x, y: imagePoint.y }), addLocation);
+  } catch (error) {
+    statusMessage.value = error instanceof Error ? error.message : "Failed to add photo(s).";
+  }
+}
+
+async function handlePhotoReplaceInput(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0] || null;
+  input.value = "";
+
+  if (!file || updatingPhoto.value) {
+    return;
+  }
+
+  const selected = selectedDialogPhoto.value;
+  if (!selected) {
+    return;
+  }
+
+  const existingPhoto = mapPhotos.value.find((photo) => photo.id === selected.id);
+  if (!existingPhoto) {
+    statusMessage.value = "Selected photo no longer exists.";
+    return;
+  }
+
+  updatingPhoto.value = true;
+  try {
+    const prepared = await optimizePhotoForStorage(file, {
+      maxEdgePx: PHOTO_MAX_EDGE_PX,
+      jpegQuality: PHOTO_JPEG_QUALITY
+    });
+
+    const updatedPhoto: PhotoRecord = {
+      ...existingPhoto,
+      capturedAt: new Date().toISOString(),
+      fileName: prepared.fileName,
+      mimeType: prepared.mimeType,
+      blob: prepared.blob,
+      syncStatus: "pending",
+      lastError: null
+    };
+
+    await savePhoto(updatedPhoto);
+    await Promise.all([refreshMapData(), refreshPending()]);
+
+    const visibleIds = new Set(photoDialogItems.value.map((item) => item.id));
+    const refreshedPhotos = mapPhotos.value.filter((photo) => visibleIds.has(photo.id));
+    const addLocation = photoDialogAddLocation.value ? cloneGeoPoint(photoDialogAddLocation.value) : null;
+    openPhotoDialog(refreshedPhotos, addLocation);
+    selectedDialogPhotoId.value = updatedPhoto.id;
+
+    statusMessage.value = "Photo updated and queued for sync.";
+  } catch (error) {
+    statusMessage.value = error instanceof Error ? error.message : "Failed to replace photo.";
+  } finally {
+    updatingPhoto.value = false;
+  }
+}
+
 function closePhotoDialog(): void {
   photoDialogVisible.value = false;
   deletingPhoto.value = false;
+  updatingPhoto.value = false;
+  photoDialogAddLocation.value = null;
   releasePhotoDialogUrls();
 }
 
@@ -1160,8 +1698,11 @@ function closeCommentDialog(): void {
   commentDialogVisible.value = false;
   selectedDialogCommentId.value = null;
   commentDialogItems.value = [];
+  commentDialogAddLocation.value = null;
+  commentDialogDraftText.value = "";
   editingCommentId.value = null;
   commentEditText.value = "";
+  savingDialogComment.value = false;
   savingCommentEdit.value = false;
   deletingComment.value = false;
 }
@@ -1172,12 +1713,15 @@ function closeOverlapMarkerDialog(): void {
   overlapMarkerComments.value = [];
 }
 
-function openPhotoDialog(photos: PhotoRecord[]): void {
+function openPhotoDialog(photos: PhotoRecord[], addLocation: GeoPoint | null = null): void {
+  closeMapClickDialog();
   closeOverlapMarkerDialog();
   closeCommentDialog();
   releasePhotoDialogUrls();
 
-  if (photos.length === 0) {
+  photoDialogAddLocation.value = addLocation ? cloneGeoPoint(addLocation) : null;
+
+  if (photos.length === 0 && !photoDialogAddLocation.value) {
     photoDialogVisible.value = false;
     return;
   }
@@ -1334,12 +1878,68 @@ async function deleteSelectedDialogComment(): Promise<void> {
   }
 }
 
-function openCommentDialog(comments: CommentRecord[]): void {
+async function addCommentFromDialog(): Promise<void> {
+  if (!activeMapId.value || isDraftActiveMap.value || !commentDialogAddLocation.value) {
+    statusMessage.value = "Save calibration before adding comments.";
+    return;
+  }
+
+  const commentValue = commentDialogDraftText.value.trim();
+  if (!commentValue) {
+    statusMessage.value = "Comment cannot be empty.";
+    return;
+  }
+
+  if (commentValue.length > 500) {
+    statusMessage.value = "Comment must be 500 characters or fewer.";
+    return;
+  }
+
+  const location = cloneGeoPoint(commentDialogAddLocation.value);
+  savingDialogComment.value = true;
+  try {
+    const comment: CommentRecord = {
+      id: crypto.randomUUID(),
+      trackId: activeTrackId.value,
+      mapId: activeMapId.value,
+      lat: location.lat,
+      lng: location.lng,
+      accuracy: location.accuracy,
+      commentText: commentValue,
+      createdAt: new Date().toISOString(),
+      syncStatus: "pending",
+      lastError: null
+    };
+
+    await saveComment(comment);
+    commentDialogDraftText.value = "";
+    await Promise.all([refreshMapData(), refreshPending()]);
+
+    if (activeMap.value?.calibration) {
+      const imagePoint = geoToImagePoint(activeMap.value.calibration, location.lat, location.lng);
+      if (Number.isFinite(imagePoint.x) && Number.isFinite(imagePoint.y)) {
+        openCommentDialog(getCommentsNearImagePoint({ x: imagePoint.x, y: imagePoint.y }), location);
+      }
+    }
+
+    statusMessage.value = "Comment saved offline and queued for sync.";
+  } catch (error) {
+    statusMessage.value = error instanceof Error ? error.message : "Failed to add comment.";
+  } finally {
+    savingDialogComment.value = false;
+  }
+}
+
+function openCommentDialog(comments: CommentRecord[], addLocation: GeoPoint | null = null): void {
+  closeMapClickDialog();
   closeOverlapMarkerDialog();
   closePhotoDialog();
   closeCommentDialog();
 
-  if (comments.length === 0) {
+  commentDialogAddLocation.value = addLocation ? cloneGeoPoint(addLocation) : null;
+  commentDialogDraftText.value = "";
+
+  if (comments.length === 0 && !commentDialogAddLocation.value) {
     return;
   }
 
@@ -1399,6 +1999,11 @@ function handleWindowKeydown(event: KeyboardEvent): void {
     return;
   }
 
+  if (mapClickDialogVisible.value) {
+    closeMapClickDialog();
+    return;
+  }
+
   if (overlapMarkerDialogVisible.value) {
     closeOverlapMarkerDialog();
     return;
@@ -1453,6 +2058,7 @@ function startCreateNewMap(): void {
   resetRouteDraft(true);
   serverRoutes.value = [];
   creatingNewMap.value = true;
+  closeMapClickDialog();
   closePhotoDialog();
   closeCommentDialog();
   closeOverlapMarkerDialog();
@@ -1465,6 +2071,8 @@ function startCreateNewMap(): void {
   commentLocationMode.value = "current";
   selectedPhotoLocation.value = null;
   selectedCommentLocation.value = null;
+  pickupMarkerLocation.value = null;
+  dropoffMarkerLocation.value = null;
   commentText.value = "";
   lastImageClick.value = null;
   tracking.value = false;
@@ -1856,6 +2464,7 @@ function handleOnline(): void {
 function handleOffline(): void {
   setOnlineState(false);
   resetRouteDraft(false);
+  closeMapClickDialog();
   commentLocationMode.value = "current";
   selectedCommentLocation.value = null;
   serverRoutes.value = [];
@@ -1864,6 +2473,7 @@ function handleOffline(): void {
 
 watch(activeMapId, () => {
   resetRouteDraft(true);
+  closeMapClickDialog();
   closePhotoDialog();
   closeCommentDialog();
   closeOverlapMarkerDialog();
@@ -1872,6 +2482,7 @@ watch(activeMapId, () => {
   commentLocationMode.value = "current";
   selectedPhotoLocation.value = null;
   selectedCommentLocation.value = null;
+  restoreMapMarkersForMap(activeMapId.value);
   commentText.value = "";
   refreshMapData().catch((error) => {
     statusMessage.value = error instanceof Error ? error.message : "Failed to load map data.";
@@ -1894,8 +2505,17 @@ watch(
   }
 );
 
+watch(
+  () => [pickupMarkerLocation.value, dropoffMarkerLocation.value],
+  () => {
+    persistMapMarkersForActiveMap();
+  },
+  { deep: true }
+);
+
 onMounted(async () => {
   await refreshOfflineMaps();
+  restoreMapMarkersForMap(activeMapId.value);
   if (online.value) {
     await Promise.all([refreshServerMaps(), refreshServerRoutesForActiveMap()]);
   }
@@ -1916,6 +2536,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  closeMapClickDialog();
   closePhotoDialog();
   closeCommentDialog();
   closeOverlapMarkerDialog();
@@ -2071,6 +2692,110 @@ onBeforeUnmount(() => {
   padding: 0.55rem 0.65rem;
   resize: vertical;
   min-height: 5.2rem;
+}
+
+.map-click-dialog {
+  width: min(520px, 100%);
+}
+
+.map-click-location {
+  margin: 0;
+  color: #2f4a59;
+  font-size: 0.9rem;
+}
+
+.map-click-summary {
+  margin: 0.35rem 0 0;
+  color: #5a7482;
+  font-size: 0.84rem;
+}
+
+.map-click-actions {
+  margin-top: 0.75rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.map-click-action {
+  border: none;
+  border-radius: 8px;
+  background: #124559;
+  color: #ffffff;
+  padding: 0.58rem 0.8rem;
+  font-weight: 700;
+  text-align: left;
+}
+
+.map-click-action.dropoff {
+  background: #2a7f62;
+}
+
+.map-click-action.pickup {
+  background: #b63a2d;
+}
+
+.map-click-action:disabled {
+  opacity: 0.55;
+}
+
+.photo-dialog-tools {
+  border: 1px solid #ced8df;
+  border-radius: 10px;
+  background: #f8fcff;
+  padding: 0.6rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.photo-dialog-tool-actions {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.photo-dialog-tool-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  padding: 0.55rem 0.75rem;
+  font-weight: 700;
+  color: #ffffff;
+  background: #345995;
+  cursor: pointer;
+}
+
+.photo-dialog-tool-button.secondary {
+  background: #2a7f62;
+}
+
+.photo-dialog-tool-button.disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.photo-dialog-tool-button input {
+  display: none;
+}
+
+.photo-replace-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  padding: 0.42rem 0.75rem;
+  font-weight: 700;
+  color: #ffffff;
+  background: #4b6575;
+  cursor: pointer;
+}
+
+.photo-replace-button.disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.photo-replace-button input {
+  display: none;
 }
 
 .comment-dialog {
