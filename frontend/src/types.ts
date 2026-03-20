@@ -7,6 +7,15 @@ export interface GeoPoint {
   accuracy: number;
 }
 
+export interface MapMarkersState {
+  pickups: GeoPoint[];
+  dropoffs: GeoPoint[];
+}
+
+export interface MapMarkersSyncPayload extends MapMarkersState {
+  mapId: string;
+}
+
 export interface ImagePoint {
   x: number;
   y: number;

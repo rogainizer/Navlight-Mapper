@@ -5,6 +5,7 @@ import type {
   MapRecord,
   PendingCounts,
   PhotoRecord,
+  ServerRoute,
   TrackPointRecord,
   TrackRecord
 } from "../types";
@@ -52,10 +53,17 @@ interface MapperDB extends DBSchema {
       "by-syncStatus": string;
     };
   };
+  routes: {
+    key: string;
+    value: ServerRoute;
+    indexes: {
+      "by-mapId": string;
+    };
+  };
 }
 
 const DB_NAME = "navlight-mapper";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 function normalizeCalibration(calibration: CalibrationModel | null): CalibrationModel | null {
   if (!calibration) {
@@ -119,6 +127,21 @@ function toStoredCommentRecord(comment: CommentRecord): CommentRecord {
   };
 }
 
+function toStoredRouteRecord(route: ServerRoute): ServerRoute {
+  return {
+    id: String(route.id),
+    mapId: String(route.mapId),
+    name: String(route.name),
+    color: String(route.color),
+    points: route.points.map((point) => ({
+      lat: Number(point.lat),
+      lng: Number(point.lng)
+    })),
+    createdAt: String(route.createdAt),
+    updatedAt: String(route.updatedAt)
+  };
+}
+
 function ensureStores(db: IDBPDatabase<MapperDB>): void {
   if (!db.objectStoreNames.contains("maps")) {
     const mapStore = db.createObjectStore("maps", { keyPath: "id" });
@@ -151,6 +174,11 @@ function ensureStores(db: IDBPDatabase<MapperDB>): void {
     commentStore.createIndex("by-trackId", "trackId");
     commentStore.createIndex("by-syncStatus", "syncStatus");
   }
+
+  if (!db.objectStoreNames.contains("routes")) {
+    const routeStore = db.createObjectStore("routes", { keyPath: "id" });
+    routeStore.createIndex("by-mapId", "mapId");
+  }
 }
 
 const dbPromise = openDB<MapperDB>(DB_NAME, DB_VERSION, {
@@ -175,14 +203,15 @@ export async function saveMap(map: MapRecord): Promise<void> {
 
 export async function clearLocalMapSessionData(): Promise<void> {
   const db = await dbPromise;
-  const tx = db.transaction(["maps", "tracks", "points", "photos", "comments"], "readwrite");
+  const tx = db.transaction(["maps", "tracks", "points", "photos", "comments", "routes"], "readwrite");
 
   await Promise.all([
     tx.objectStore("maps").clear(),
     tx.objectStore("tracks").clear(),
     tx.objectStore("points").clear(),
     tx.objectStore("photos").clear(),
-    tx.objectStore("comments").clear()
+    tx.objectStore("comments").clear(),
+    tx.objectStore("routes").clear()
   ]);
 
   await tx.done;
@@ -326,6 +355,28 @@ export async function listCommentsByMap(mapId: string): Promise<CommentRecord[]>
   const db = await dbPromise;
   const comments: CommentRecord[] = await db.getAllFromIndex("comments", "by-mapId", mapId);
   return comments.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export async function listRoutesByMap(mapId: string): Promise<ServerRoute[]> {
+  const db = await dbPromise;
+  const routes: ServerRoute[] = await db.getAllFromIndex("routes", "by-mapId", mapId);
+  return routes.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export async function replaceRoutesForMap(mapId: string, routes: ServerRoute[]): Promise<void> {
+  const db = await dbPromise;
+  const tx = db.transaction("routes", "readwrite");
+
+  const existingIds = await tx.store.index("by-mapId").getAllKeys(mapId);
+  for (const existingId of existingIds) {
+    await tx.store.delete(String(existingId));
+  }
+
+  for (const route of routes) {
+    await tx.store.put(toStoredRouteRecord(route));
+  }
+
+  await tx.done;
 }
 
 export async function listPendingCommentsForMap(mapId: string): Promise<CommentRecord[]> {

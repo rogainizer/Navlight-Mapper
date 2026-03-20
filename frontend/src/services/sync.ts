@@ -9,6 +9,7 @@ import {
   markPointsSynced
 } from "./db";
 import { uploadSyncBatch } from "./api";
+import type { MapMarkersSyncPayload } from "../types";
 
 interface SyncOutcome {
   syncedPoints: number;
@@ -16,6 +17,8 @@ interface SyncOutcome {
   failedPhotos: number;
   syncedComments: number;
   failedComments: number;
+  syncedMarkers: number;
+  syncedMarkerState: boolean;
 }
 
 function extensionForMimeType(mimeType: string): string {
@@ -28,15 +31,27 @@ function extensionForMimeType(mimeType: string): string {
   return "jpg";
 }
 
-export async function syncPendingRecords(clientId: string, activeMapId: string | null): Promise<SyncOutcome> {
+export async function syncPendingRecords(
+  clientId: string,
+  activeMapId: string | null,
+  mapMarkers: MapMarkersSyncPayload[]
+): Promise<SyncOutcome> {
   const [pendingPoints, pendingPhotos, pendingComments] = await Promise.all([
     listPendingPoints(),
     activeMapId ? listPendingPhotosForMap(activeMapId) : Promise.resolve([]),
     activeMapId ? listPendingCommentsForMap(activeMapId) : Promise.resolve([])
   ]);
 
-  if (pendingPoints.length === 0 && pendingPhotos.length === 0 && pendingComments.length === 0) {
-    return { syncedPoints: 0, syncedPhotos: 0, failedPhotos: 0, syncedComments: 0, failedComments: 0 };
+  if (pendingPoints.length === 0 && pendingPhotos.length === 0 && pendingComments.length === 0 && mapMarkers.length === 0) {
+    return {
+      syncedPoints: 0,
+      syncedPhotos: 0,
+      failedPhotos: 0,
+      syncedComments: 0,
+      failedComments: 0,
+      syncedMarkers: 0,
+      syncedMarkerState: false
+    };
   }
 
   const batchId = crypto.randomUUID();
@@ -54,6 +69,10 @@ export async function syncPendingRecords(clientId: string, activeMapId: string |
       commentCount: pendingComments.length
     })
   );
+
+  if (mapMarkers.length > 0) {
+    formData.set("mapMarkers", JSON.stringify(mapMarkers));
+  }
 
   formData.set(
     "points",
@@ -125,7 +144,9 @@ export async function syncPendingRecords(clientId: string, activeMapId: string |
       syncedPhotos: response.syncedPhotoIds.length,
       failedPhotos: response.failedPhotoIds.length,
       syncedComments: response.syncedCommentIds.length,
-      failedComments: response.failedCommentIds.length
+      failedComments: response.failedCommentIds.length,
+      syncedMarkers: mapMarkers.reduce((total, markerState) => total + markerState.pickups.length + markerState.dropoffs.length, 0),
+      syncedMarkerState: mapMarkers.length > 0
     };
   } catch (error) {
     const reason = error instanceof Error ? error.message : "Unknown sync error";

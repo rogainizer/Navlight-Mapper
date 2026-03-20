@@ -1,192 +1,245 @@
 <template>
   <div class="app-shell">
-    <header class="app-header">
-      <h1>Rogainizer Planner</h1>
-      <div class="header-meta">
-        <span><strong>Network:</strong> {{ online ? "Online" : "Offline" }}</span>
-        <span><strong>GPS:</strong> {{ currentPosition ? `±${Math.round(currentPosition.accuracy)}m` : "Waiting" }}</span>
-        <span>
-          <strong>Pending Sync:</strong>
-          {{ pendingCounts.points }} points / {{ pendingCounts.photos }} photos / {{ pendingCounts.comments }} comments
-        </span>
+    <header class="app-header" :class="{ 'mobile-layout': isMobileLayout }">
+      <div class="app-header-row" :class="{ 'mobile-layout': isMobileLayout }">
+        <h1>Rogainizer Planner</h1>
+        <template v-if="isMobileLayout">
+          <select
+            v-if="online"
+            class="mobile-header-map-select"
+            :value="mobileHeaderMapValue"
+            aria-label="Select map"
+            @change="handleMobileHeaderMapChange"
+          >
+            <option v-if="!creatingNewMap && !activeMapId" value="" disabled>Select map</option>
+            <option
+              v-if="activeMap && activeMapId && !creatingNewMap && !activeMapInServerList"
+              :value="activeMapId"
+            >
+              {{ activeMap.name }}
+            </option>
+            <option :value="MOBILE_HEADER_CREATE_MAP_VALUE">Create new map</option>
+            <option v-if="hasLocalMapData" :value="MOBILE_HEADER_CLEAR_CACHE_VALUE">Clear current cached map</option>
+            <option v-for="map in serverMaps" :key="map.id" :value="map.id">{{ map.name }}</option>
+          </select>
+          <span v-else class="mobile-header-map-name">{{ activeMap?.name ?? "No map selected" }}</span>
+        </template>
       </div>
     </header>
 
+    <button
+      v-if="isMobileLayout && !mobileControlsOpen"
+      type="button"
+      class="mobile-sheet-toggle"
+      aria-label="Open tools panel"
+      aria-controls="mobile-controls-sheet"
+      @click="toggleMobileControls"
+    >
+      <span class="mobile-sheet-toggle-bar"></span>
+    </button>
+
     <main class="app-main">
-      <section class="map-section">
-        <MapCanvas
-          :map-blob="activeMap?.blob ?? null"
-          :calibration="activeMap?.calibration ?? null"
-          :suppress-marker-clicks="suppressMarkerDialogs"
-          :select-location-on-marker-click="mapLocationSelectionActive"
-          :current-position="currentPosition"
-          :selected-photo-location="photoLocationMode === 'map' ? selectedPhotoLocation : null"
-          :selected-comment-location="commentLocationMode === 'map' ? selectedCommentLocation : null"
-          :pickup-marker="pickupMarkerLocation"
-          :dropoff-marker="dropoffMarkerLocation"
-          :points="mapPoints"
-          :photos="mapPhotos"
-          :comments="mapComments"
-          :routes="serverRoutes"
-          :route-draft-points="routeDraftPoints"
-          :route-draft-color="routeColor"
-          @image-click="onMapClick"
-          @photo-marker-click="openPhotoDialog"
-          @comment-marker-click="openCommentDialog"
-          @overlap-marker-click="openOverlapMarkerDialog"
-          @current-position-coverage-change="onCurrentPositionCoverageChange"
-        />
-      </section>
-
-      <aside class="control-section">
-        <MapManagerPanel
-          :server-maps="serverMaps"
-          :active-map-id="activeMapId"
-          :offline-map-name="activeMap?.name ?? null"
-          :creating-new-map="creatingNewMap"
-          :online="online"
-          @start-create-map="startCreateNewMap"
-          @select-map="selectMap"
-          @save-map-file="saveMapFromFile"
-          @download-map-url="saveMapFromUrl"
-        />
-
-        <CalibrationPanel
-          v-if="creatingNewMap"
-          :last-image-click="lastImageClick"
-          :saved-calibration="activeMap?.calibration ?? null"
-          :disabled="!activeMap"
-          @save="saveCalibration"
-        />
-
-        <TrackingControls :tracking="tracking" :can-start="canStartTracking" @start="startTracking" @stop="stopTracking" />
-
-        <PhotoCapturePanel
-          :disabled="!canCapturePhoto"
-          :disabled-reason="captureDisabledReason"
-          :mode="photoLocationMode"
-          :can-use-map-selection="canUseMapPhotoSelection"
-          :selected-map-location="photoLocationMode === 'map' ? selectedPhotoLocation : null"
-          @update:mode="setPhotoLocationMode"
-          @capture="capturePhotos"
-        />
-
-        <section class="panel comment-panel">
-          <h2>Map Comments</h2>
-          <p class="route-help">Add a text comment at current GPS or a selected map location.</p>
-
-          <div class="comment-mode">
-            <label>
-              <input
-                type="radio"
-                name="comment-location-mode"
-                value="current"
-                :checked="commentLocationMode === 'current'"
-                @change="setCommentLocationMode('current')"
-              />
-              Use Current GPS
-            </label>
-            <label :class="{ disabled: !canUseMapPhotoSelection }">
-              <input
-                type="radio"
-                name="comment-location-mode"
-                value="map"
-                :checked="commentLocationMode === 'map'"
-                :disabled="!canUseMapPhotoSelection"
-                @change="setCommentLocationMode('map')"
-              />
-              Select Location On Map
-            </label>
-          </div>
-
-          <p v-if="commentLocationMode === 'map' && selectedCommentLocation" class="sync-state">
-            Selected comment location: {{ selectedCommentLocation.lat.toFixed(6) }}, {{ selectedCommentLocation.lng.toFixed(6) }}
-          </p>
-          <p v-else-if="commentLocationMode === 'map'" class="sync-state">
-            Tap the map to select where this comment will be saved.
-          </p>
-
-          <textarea
-            v-model="commentText"
-            rows="3"
-            maxlength="500"
-            placeholder="Add field notes here..."
-            :disabled="!canAddComment"
-          ></textarea>
-
-          <div class="route-actions">
-            <button type="button" @click="addComment" :disabled="!canSaveComment">Save Comment</button>
-          </div>
-
-          <p class="sync-state" v-if="!canSaveComment">{{ commentDisabledReason }}</p>
+        <section class="map-section">
+          <MapCanvas
+            :map-blob="activeMap?.blob ?? null"
+            :calibration="activeMap?.calibration ?? null"
+            :suppress-marker-clicks="suppressMarkerDialogs"
+            :select-location-on-marker-click="mapLocationSelectionActive"
+            :current-position="currentPosition"
+            :selected-photo-location="photoLocationMode === 'map' ? selectedPhotoLocation : null"
+            :selected-comment-location="commentLocationMode === 'map' ? selectedCommentLocation : null"
+            :pickup-markers="pickupMarkerLocations"
+            :dropoff-markers="dropoffMarkerLocations"
+            :points="mapPoints"
+            :photos="mapPhotos"
+            :comments="mapComments"
+            :routes="serverRoutes"
+            :route-draft-points="routeDraftPoints"
+            :route-draft-color="routeColor"
+            :show-sync-button="isMobileLayout"
+            :sync-disabled="syncing || !online"
+            :sync-label="syncing ? 'Syncing...' : 'Sync'"
+            :sync-title="syncButtonTitle"
+            :sync-badge-label="syncBadgeLabel"
+            @image-click="onMapClick"
+            @photo-marker-click="openPhotoDialog"
+            @comment-marker-click="openCommentDialog"
+            @overlap-marker-click="openOverlapMarkerDialog"
+            @sync-click="syncNow"
+            @current-position-coverage-change="onCurrentPositionCoverageChange"
+          />
         </section>
 
-        <section class="panel route-panel">
-          <h2>Create Route</h2>
-          <p class="route-help">Name a route, choose a color, then tap map points to draw connected lines.</p>
+        <div v-if="isMobileLayout && mobileControlsOpen" class="mobile-control-backdrop" @click="closeMobileControls"></div>
 
-          <p class="sync-state" v-if="!online">Route creation is only available while online.</p>
-          <p class="sync-state" v-else-if="!activeMapId">Select a map to create routes.</p>
-          <p class="sync-state" v-else-if="isDraftActiveMap">Save map calibration before creating routes.</p>
-          <p class="sync-state" v-else-if="!activeMap?.calibration">Calibrate this map before creating routes.</p>
+        <aside
+          id="mobile-controls-sheet"
+          class="control-section"
+          :class="{ 'mobile-layout': isMobileLayout, 'mobile-open': mobileControlsOpen }"
+        >
+          <div v-if="isMobileLayout" class="mobile-control-header">
+            <div class="mobile-control-heading">
+              <strong>{{ activeMap?.name ?? 'Map Tools' }}</strong>
+              <p>{{ online ? 'Choose a server map online, then continue working from the map.' : 'Offline mode is using the cached map, photos, comments, and routes.' }}</p>
+            </div>
+            <button type="button" class="mobile-control-close" @click="closeMobileControls">Close</button>
+          </div>
 
-          <template v-else>
-            <label class="route-label">
-              Route Name
-              <input v-model="routeName" type="text" maxlength="120" placeholder="Leg 1" :disabled="!routeCreateEnabled" />
-            </label>
+          <MapManagerPanel
+            :server-maps="serverMaps"
+            :active-map-id="activeMapId"
+            :offline-map-name="activeMap?.name ?? null"
+            :creating-new-map="creatingNewMap"
+            :online="online"
+            :can-clear-local-map-data="hasLocalMapData"
+            @start-create-map="startCreateNewMap"
+            @clear-cached-map="clearCurrentCachedMapData"
+            @select-map="selectMap"
+            @save-map-file="saveMapFromFile"
+            @download-map-url="saveMapFromUrl"
+          />
 
-            <label class="route-label color">
-              Route Color
-              <input v-model="routeColor" type="color" :disabled="!routeCreateEnabled" />
-            </label>
+          <CalibrationPanel
+            v-if="creatingNewMap"
+            :last-image-click="lastImageClick"
+            :saved-calibration="activeMap?.calibration ?? null"
+            :disabled="!activeMap"
+            @save="saveCalibration"
+          />
 
-            <div class="route-actions" v-if="!routeCreateEnabled">
-              <button type="button" @click="startRouteSelection">Start Route</button>
+          <TrackingControls :tracking="tracking" :can-start="canStartTracking" @start="startTracking" @stop="stopTracking" />
+
+          <PhotoCapturePanel
+            :disabled="!canCapturePhoto"
+            :disabled-reason="captureDisabledReason"
+            :mode="photoLocationMode"
+            :can-use-map-selection="canUseMapPhotoSelection"
+            :selected-map-location="photoLocationMode === 'map' ? selectedPhotoLocation : null"
+            @update:mode="setPhotoLocationMode"
+            @capture="capturePhotos"
+          />
+
+          <section class="panel comment-panel">
+            <h2>Map Comments</h2>
+            <p class="route-help">Add a text comment at current GPS or a selected map location.</p>
+
+            <div class="comment-mode">
+              <label>
+                <input
+                  type="radio"
+                  name="comment-location-mode"
+                  value="current"
+                  :checked="commentLocationMode === 'current'"
+                  @change="setCommentLocationMode('current')"
+                />
+                Use Current GPS
+              </label>
+              <label :class="{ disabled: !canUseMapPhotoSelection }">
+                <input
+                  type="radio"
+                  name="comment-location-mode"
+                  value="map"
+                  :checked="commentLocationMode === 'map'"
+                  :disabled="!canUseMapPhotoSelection"
+                  @change="setCommentLocationMode('map')"
+                />
+                Select Location On Map
+              </label>
             </div>
 
-            <div class="route-actions" v-else>
-              <button type="button" class="secondary" @click="clearRoutePoints" :disabled="routeDraftPoints.length === 0">
-                Clear Points
-              </button>
-              <button type="button" class="secondary" @click="cancelRouteSelection">Cancel</button>
-              <button type="button" @click="saveRoute" :disabled="!canSaveRoute || savingRoute">
-                {{ savingRoute ? "Saving..." : "Save Route" }}
-              </button>
-            </div>
-
-            <p class="sync-state" v-if="routeCreateEnabled">
-              Tap the map to add route points. Points selected: {{ routeDraftPoints.length }}
+            <p v-if="commentLocationMode === 'map' && selectedCommentLocation" class="sync-state">
+              Selected comment location: {{ selectedCommentLocation.lat.toFixed(6) }}, {{ selectedCommentLocation.lng.toFixed(6) }}
+            </p>
+            <p v-else-if="commentLocationMode === 'map'" class="sync-state">
+              Tap the map to select where this comment will be saved.
             </p>
 
-            <ul class="route-list" v-if="serverRoutes.length > 0">
-              <li v-for="route in serverRoutes" :key="route.id">
-                <span class="route-color-dot" :style="{ backgroundColor: route.color }"></span>
-                <span>{{ route.name }}</span>
-                <small>{{ route.points.length }} pts</small>
-                <button
-                  type="button"
-                  class="route-delete"
-                  :disabled="!online || deletingRouteId === route.id"
-                  @click="removeRoute(route)"
-                >
-                  {{ deletingRouteId === route.id ? "Removing..." : "Remove" }}
-                </button>
-              </li>
-            </ul>
-          </template>
-        </section>
+            <textarea
+              v-model="commentText"
+              rows="3"
+              maxlength="500"
+              placeholder="Add field notes here..."
+              :disabled="!canAddComment"
+            ></textarea>
 
-        <section class="panel sync-panel">
-          <h2>Sync Queue</h2>
-          <div class="sync-actions">
-            <button type="button" @click="syncNow" :disabled="syncing || !online">{{ syncing ? "Syncing..." : "Sync Now" }}</button>
-            <span>{{ syncSummary }}</span>
-          </div>
-          <p class="sync-state" v-if="statusMessage">{{ statusMessage }}</p>
-        </section>
-      </aside>
-    </main>
+            <div class="route-actions">
+              <button type="button" @click="addComment" :disabled="!canSaveComment">Save Comment</button>
+            </div>
+
+            <p class="sync-state" v-if="!canSaveComment">{{ commentDisabledReason }}</p>
+          </section>
+
+          <section class="panel route-panel">
+            <h2>Create Route</h2>
+            <p class="route-help">Name a route, choose a color, then tap map points to draw connected lines.</p>
+
+            <p class="sync-state" v-if="!online">Route creation is only available while online.</p>
+            <p class="sync-state" v-else-if="!activeMapId">Select a map to create routes.</p>
+            <p class="sync-state" v-else-if="isDraftActiveMap">Save map calibration before creating routes.</p>
+            <p class="sync-state" v-else-if="!activeMap?.calibration">Calibrate this map before creating routes.</p>
+
+            <template v-else>
+              <label class="route-label">
+                Route Name
+                <input v-model="routeName" type="text" maxlength="120" placeholder="Leg 1" :disabled="!routeCreateEnabled" />
+              </label>
+
+              <label class="route-label color">
+                Route Color
+                <input v-model="routeColor" type="color" :disabled="!routeCreateEnabled" />
+              </label>
+
+              <div class="route-actions" v-if="!routeCreateEnabled">
+                <button type="button" @click="startRouteSelection">Start Route</button>
+              </div>
+
+              <div class="route-actions" v-else>
+                <button type="button" class="secondary" @click="clearRoutePoints" :disabled="routeDraftPoints.length === 0">
+                  Clear Points
+                </button>
+                <button type="button" class="secondary" @click="cancelRouteSelection">Cancel</button>
+                <button type="button" @click="saveRoute" :disabled="!canSaveRoute || savingRoute">
+                  {{ savingRoute ? 'Saving...' : 'Save Route' }}
+                </button>
+              </div>
+
+              <p class="sync-state" v-if="routeCreateEnabled">
+                Tap the map to add route points. Points selected: {{ routeDraftPoints.length }}
+              </p>
+
+              <ul class="route-list" v-if="serverRoutes.length > 0">
+                <li v-for="route in serverRoutes" :key="route.id">
+                  <span class="route-color-dot" :style="{ backgroundColor: route.color }"></span>
+                  <span>{{ route.name }}</span>
+                  <small>{{ route.points.length }} pts</small>
+                  <button
+                    type="button"
+                    class="route-delete"
+                    :disabled="!online || deletingRouteId === route.id"
+                    @click="removeRoute(route)"
+                  >
+                    {{ deletingRouteId === route.id ? 'Removing...' : 'Remove' }}
+                  </button>
+                </li>
+              </ul>
+            </template>
+          </section>
+
+          <section class="panel sync-panel">
+            <h2>Sync Queue</h2>
+            <div class="sync-actions">
+              <button type="button" class="sync-panel-button" :title="syncButtonTitle" @click="syncNow" :disabled="syncing || !online">
+                <span class="sync-button-content">
+                  <span>{{ syncing ? 'Syncing...' : 'Sync Now' }}</span>
+                  <span v-if="syncBadgeLabel" class="sync-pending-badge">{{ syncBadgeLabel }}</span>
+                </span>
+              </button>
+              <span>{{ syncSummary }}</span>
+            </div>
+            <p class="sync-state" v-if="statusMessage">{{ statusMessage }}</p>
+          </section>
+        </aside>
+      </main>
 
     <Teleport to="body">
       <div v-if="mapClickDialogVisible" class="photo-dialog-backdrop" @click.self="closeMapClickDialog">
@@ -469,7 +522,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import CalibrationPanel from "./components/CalibrationPanel.vue";
 import MapCanvas from "./components/MapCanvas.vue";
 import MapManagerPanel from "./components/MapManagerPanel.vue";
@@ -487,8 +540,10 @@ import {
   listMaps,
   listPhotosByMap,
   listPointsByMap,
+  listRoutesByMap,
   replaceCommentsForMap,
   replacePhotosForMap,
+  replaceRoutesForMap,
   saveComment,
   saveMap,
   savePhoto,
@@ -504,6 +559,7 @@ import {
   fetchServerMapImage,
   fetchServerMapPhotoBlob,
   listServerMapComments,
+  listServerMapMarkers,
   listServerMapRoutes,
   listServerMaps,
   listServerMapPhotos,
@@ -521,6 +577,8 @@ import type {
   ImagePoint,
   LivePosition,
   MapRecord,
+  MapMarkersState,
+  MapMarkersSyncPayload,
   PendingCounts,
   PhotoLocationMode,
   PhotoRecord,
@@ -534,6 +592,7 @@ import type {
 const ACTIVE_MAP_KEY = "navlight-active-map-id";
 const CLIENT_ID_KEY = "navlight-client-id";
 const MAP_MARKERS_KEY = "navlight-map-markers-v1";
+const MAP_MARKER_DIRTY_KEY = "navlight-map-marker-dirty-v1";
 const MIN_POINT_INTERVAL_MS = 2500;
 const PHOTO_MAX_EDGE_PX = 1280;
 const PHOTO_JPEG_QUALITY = 0.75;
@@ -541,6 +600,9 @@ const PHOTO_MARKER_HIT_RADIUS_PX = 18;
 const COMMENT_MARKER_HIT_RADIUS_PX = 20;
 const MARKER_MATCH_DISTANCE_METERS = 10;
 const EARTH_RADIUS_METERS = 6371000;
+const MOBILE_LAYOUT_MAX_WIDTH = 899;
+const MOBILE_HEADER_CREATE_MAP_VALUE = "__mobile_create_map__";
+const MOBILE_HEADER_CLEAR_CACHE_VALUE = "__mobile_clear_cached_map__";
 
 type PhotoDialogItem = {
   id: string;
@@ -558,9 +620,14 @@ type CommentDialogItem = {
   syncStatus: CommentRecord["syncStatus"];
 };
 
-type MapMarkerState = {
-  pickup: GeoPoint | null;
-  dropoff: GeoPoint | null;
+type MapMarkerState = MapMarkersState;
+type PendingMarkerCounts = {
+  maps: number;
+  pickups: number;
+  dropoffs: number;
+  emptyMaps: number;
+  badgeCount: number;
+  total: number;
 };
 
 const offlineMaps = ref<MapRecord[]>([]);
@@ -583,6 +650,7 @@ const commentLocationMode = ref<PhotoLocationMode>("current");
 const selectedCommentLocation = ref<GeoPoint | null>(null);
 const online = ref(navigator.onLine);
 const pendingCounts = ref<PendingCounts>({ points: 0, photos: 0, comments: 0 });
+const pendingMarkerCounts = ref<PendingMarkerCounts>({ maps: 0, pickups: 0, dropoffs: 0, emptyMaps: 0, badgeCount: 0, total: 0 });
 const syncing = ref(false);
 const statusMessage = ref("");
 const syncSummary = ref("No sync run yet.");
@@ -590,8 +658,8 @@ const mapClickDialogVisible = ref(false);
 const mapClickGeoPoint = ref<GeoPoint | null>(null);
 const mapClickNearbyPhotos = ref<PhotoRecord[]>([]);
 const mapClickNearbyComments = ref<CommentRecord[]>([]);
-const pickupMarkerLocation = ref<GeoPoint | null>(null);
-const dropoffMarkerLocation = ref<GeoPoint | null>(null);
+const pickupMarkerLocations = ref<GeoPoint[]>([]);
+const dropoffMarkerLocations = ref<GeoPoint[]>([]);
 const photoDialogVisible = ref(false);
 const photoDialogItems = ref<PhotoDialogItem[]>([]);
 const selectedDialogPhotoId = ref<string | null>(null);
@@ -618,10 +686,12 @@ const routeDraftPoints = ref<RoutePoint[]>([]);
 const routeCreateEnabled = ref(false);
 const savingRoute = ref(false);
 const deletingRouteId = ref<string | null>(null);
+const isMobileLayout = ref(window.innerWidth <= MOBILE_LAYOUT_MAX_WIDTH);
+const mobileControlsOpen = ref(false);
 
 let lastRecordedPointMs = 0;
 let stopLocationWatch: (() => void) | null = null;
-let restoringPersistedMarkers = false;
+let restoringPersistedMarkers = 0;
 
 const activeMap = computed(() => {
   if (draftMap.value && activeMapId.value === draftMap.value.id) {
@@ -667,6 +737,65 @@ const canSaveRoute = computed(
         routeDraftPoints.value.length >= 2
     )
 );
+const activeMapInServerList = computed(
+  () => Boolean(activeMapId.value && serverMaps.value.some((map) => map.id === activeMapId.value))
+);
+const mobileHeaderMapValue = computed(() => {
+  if (creatingNewMap.value) {
+    return MOBILE_HEADER_CREATE_MAP_VALUE;
+  }
+
+  return activeMapId.value ?? "";
+});
+const hasLocalMapData = computed(() => Boolean(draftMap.value || offlineMaps.value.length > 0));
+const pendingSyncBadgeCount = computed(
+  () => pendingCounts.value.points + pendingCounts.value.photos + pendingCounts.value.comments + pendingMarkerCounts.value.badgeCount
+);
+const syncBadgeLabel = computed(() => {
+  const badgeCount = pendingSyncBadgeCount.value;
+  if (badgeCount <= 0) {
+    return "";
+  }
+
+  return badgeCount > 99 ? "99+" : String(badgeCount);
+});
+const syncButtonTitle = computed(() => {
+  const pendingItems: string[] = [];
+
+  if (pendingCounts.value.points > 0) {
+    pendingItems.push(formatPendingCount(pendingCounts.value.points, "point"));
+  }
+  if (pendingCounts.value.photos > 0) {
+    pendingItems.push(formatPendingCount(pendingCounts.value.photos, "photo"));
+  }
+  if (pendingCounts.value.comments > 0) {
+    pendingItems.push(formatPendingCount(pendingCounts.value.comments, "comment"));
+  }
+
+  if (pendingMarkerCounts.value.maps > 0) {
+    const markerDetails: string[] = [];
+    if (pendingMarkerCounts.value.pickups > 0) {
+      markerDetails.push(formatPendingCount(pendingMarkerCounts.value.pickups, "pickup marker"));
+    }
+    if (pendingMarkerCounts.value.dropoffs > 0) {
+      markerDetails.push(formatPendingCount(pendingMarkerCounts.value.dropoffs, "drop-off marker"));
+    }
+
+    if (pendingMarkerCounts.value.total > 0) {
+      pendingItems.push(
+        `${formatPendingCount(pendingMarkerCounts.value.total, "marker")} across ${formatPendingCount(pendingMarkerCounts.value.maps, "map")}${markerDetails.length > 0 ? ` (${markerDetails.join(", ")})` : ""}`
+      );
+    } else {
+      pendingItems.push(`marker changes across ${formatPendingCount(pendingMarkerCounts.value.maps, "map")}`);
+    }
+  }
+
+  if (pendingItems.length === 0) {
+    return online.value ? "Nothing pending sync." : "Nothing pending sync. Sync is only available while online.";
+  }
+
+  return `Pending sync: ${pendingItems.join(", ")}.${online.value ? "" : " Sync is only available while online."}`;
+});
 const selectedDialogPhoto = computed(() => {
   const selectedId = selectedDialogPhotoId.value;
   if (!selectedId) {
@@ -770,15 +899,11 @@ const commentDisabledReason = computed(() => {
   }
   return "";
 });
-const dropoffMarkerAtSelectedPoint = computed(() => markerAtMapClickPoint(dropoffMarkerLocation.value));
-const pickupMarkerAtSelectedPoint = computed(() => markerAtMapClickPoint(pickupMarkerLocation.value));
+const dropoffMarkerAtSelectedPoint = computed(() => findMarkerAtMapClickPoint(dropoffMarkerLocations.value));
+const pickupMarkerAtSelectedPoint = computed(() => findMarkerAtMapClickPoint(pickupMarkerLocations.value));
 const dropoffActionLabel = computed(() => {
   if (dropoffMarkerAtSelectedPoint.value) {
     return "Remove Drop-off Marker";
-  }
-
-  if (dropoffMarkerLocation.value) {
-    return "Move Drop-off Marker Here";
   }
 
   return "Add Drop-off Marker (green tick)";
@@ -788,12 +913,8 @@ const pickupActionLabel = computed(() => {
     return "Remove Pickup Marker";
   }
 
-  if (dropoffMarkerLocation.value) {
-    return "Place Pickup On Drop-off (red cross)";
-  }
-
-  if (pickupMarkerLocation.value) {
-    return "Move Pickup Marker Here";
+  if (dropoffMarkerAtSelectedPoint.value) {
+    return "Add Pickup Marker On This Drop-off (red cross)";
   }
 
   return "Add Pickup Marker (red cross)";
@@ -834,6 +955,18 @@ function toStoredGeoPoint(value: unknown): GeoPoint | null {
   };
 }
 
+function toStoredGeoPoints(value: unknown): GeoPoint[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return dedupeGeoPoints(
+    value
+      .map((entry) => toStoredGeoPoint(entry))
+      .filter((point): point is GeoPoint => point !== null)
+  );
+}
+
 function readPersistedMapMarkers(): Record<string, MapMarkerState> {
   const raw = localStorage.getItem(MAP_MARKERS_KEY);
   if (!raw) {
@@ -852,17 +985,21 @@ function readPersistedMapMarkers(): Record<string, MapMarkerState> {
         return;
       }
 
-      const markerState = markerValue as { pickup?: unknown; dropoff?: unknown };
-      const pickup = toStoredGeoPoint(markerState.pickup);
-      const dropoff = toStoredGeoPoint(markerState.dropoff);
+      const markerState = markerValue as { pickup?: unknown; pickups?: unknown; dropoff?: unknown; dropoffs?: unknown };
+      const legacyPickup = toStoredGeoPoint(markerState.pickup);
+      const pickups = toStoredGeoPoints(markerState.pickups);
+      const legacyDropoff = toStoredGeoPoint(markerState.dropoff);
+      const dropoffs = toStoredGeoPoints(markerState.dropoffs);
+      const normalizedPickups = legacyPickup ? dedupeGeoPoints([...pickups, legacyPickup]) : pickups;
+      const normalizedDropoffs = legacyDropoff ? dedupeGeoPoints([...dropoffs, legacyDropoff]) : dropoffs;
 
-      if (!pickup && !dropoff) {
+      if (normalizedPickups.length === 0 && normalizedDropoffs.length === 0) {
         return;
       }
 
       normalized[mapId] = {
-        pickup,
-        dropoff
+        pickups: normalizedPickups,
+        dropoffs: normalizedDropoffs
       };
     });
 
@@ -882,22 +1019,118 @@ function writePersistedMapMarkers(mapMarkers: Record<string, MapMarkerState>): v
   localStorage.setItem(MAP_MARKERS_KEY, JSON.stringify(mapMarkers));
 }
 
-function restoreMapMarkersForMap(mapId: string | null): void {
-  restoringPersistedMarkers = true;
+function readDirtyMapMarkerIds(): Set<string> {
+  const raw = localStorage.getItem(MAP_MARKER_DIRTY_KEY);
+  if (!raw) {
+    return new Set();
+  }
+
   try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return new Set();
+    }
+
+    return new Set(
+      parsed
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0)
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function writeDirtyMapMarkerIds(mapIds: Set<string>): void {
+  if (mapIds.size === 0) {
+    localStorage.removeItem(MAP_MARKER_DIRTY_KEY);
+  } else {
+    localStorage.setItem(MAP_MARKER_DIRTY_KEY, JSON.stringify(Array.from(mapIds.values())));
+  }
+
+  refreshPendingMarkerCounts();
+}
+
+function areMapMarkersDirty(mapId: string | null): boolean {
+  if (!mapId) {
+    return false;
+  }
+
+  return readDirtyMapMarkerIds().has(mapId);
+}
+
+function markMapMarkersDirty(mapId: string): void {
+  const dirtyMapIds = readDirtyMapMarkerIds();
+  dirtyMapIds.add(mapId);
+  writeDirtyMapMarkerIds(dirtyMapIds);
+}
+
+function clearMapMarkersDirty(mapId: string): void {
+  const dirtyMapIds = readDirtyMapMarkerIds();
+  dirtyMapIds.delete(mapId);
+  writeDirtyMapMarkerIds(dirtyMapIds);
+}
+
+function withMapMarkerPersistencePaused(action: () => void): void {
+  restoringPersistedMarkers += 1;
+  try {
+    action();
+  } finally {
+    void nextTick(() => {
+      restoringPersistedMarkers = Math.max(0, restoringPersistedMarkers - 1);
+    });
+  }
+}
+
+function cacheMapMarkersForMap(mapId: string, markerState: MapMarkerState): void {
+  const persistedMarkers = readPersistedMapMarkers();
+  const pickups = cloneGeoPoints(markerState.pickups);
+  const dropoffs = cloneGeoPoints(markerState.dropoffs);
+
+  if (pickups.length === 0 && dropoffs.length === 0) {
+    delete persistedMarkers[mapId];
+  } else {
+    persistedMarkers[mapId] = { pickups, dropoffs };
+  }
+
+  writePersistedMapMarkers(persistedMarkers);
+}
+
+function clearPersistedMapMarkers(mapId: string): void {
+  const persistedMarkers = readPersistedMapMarkers();
+  if (!(mapId in persistedMarkers)) {
+    return;
+  }
+
+  delete persistedMarkers[mapId];
+  writePersistedMapMarkers(persistedMarkers);
+}
+
+function hasPersistedMapMarkers(mapId: string | null): boolean {
+  if (!mapId) {
+    return false;
+  }
+
+  return Boolean(readPersistedMapMarkers()[mapId]);
+}
+
+function setVisibleMapMarkers(markerState: MapMarkerState): void {
+  pickupMarkerLocations.value = cloneGeoPoints(markerState.pickups);
+  dropoffMarkerLocations.value = cloneGeoPoints(markerState.dropoffs);
+}
+
+function restoreMapMarkersForMap(mapId: string | null): void {
+  withMapMarkerPersistencePaused(() => {
     if (!mapId) {
-      pickupMarkerLocation.value = null;
-      dropoffMarkerLocation.value = null;
+      setVisibleMapMarkers({ pickups: [], dropoffs: [] });
       return;
     }
 
     const persistedMarkers = readPersistedMapMarkers();
-    const markerState = persistedMarkers[mapId];
-    pickupMarkerLocation.value = markerState?.pickup ? cloneGeoPoint(markerState.pickup) : null;
-    dropoffMarkerLocation.value = markerState?.dropoff ? cloneGeoPoint(markerState.dropoff) : null;
-  } finally {
-    restoringPersistedMarkers = false;
-  }
+    const markerState = persistedMarkers[mapId] || { pickups: [], dropoffs: [] };
+    setVisibleMapMarkers(markerState);
+  });
 }
 
 function persistMapMarkersForActiveMap(): void {
@@ -910,17 +1143,89 @@ function persistMapMarkersForActiveMap(): void {
     return;
   }
 
-  const persistedMarkers = readPersistedMapMarkers();
-  const pickup = pickupMarkerLocation.value ? cloneGeoPoint(pickupMarkerLocation.value) : null;
-  const dropoff = dropoffMarkerLocation.value ? cloneGeoPoint(dropoffMarkerLocation.value) : null;
+  const pickups = cloneGeoPoints(pickupMarkerLocations.value);
+  const dropoffs = cloneGeoPoints(dropoffMarkerLocations.value);
+  cacheMapMarkersForMap(mapId, { pickups, dropoffs });
+  markMapMarkersDirty(mapId);
+}
 
-  if (!pickup && !dropoff) {
-    delete persistedMarkers[mapId];
-  } else {
-    persistedMarkers[mapId] = { pickup, dropoff };
+function formatPendingCount(count: number, label: string): string {
+  return `${count} ${label}${count === 1 ? "" : "s"}`;
+}
+
+function getPendingMarkerSyncPayloads(): MapMarkersSyncPayload[] {
+  const persistedMarkers = readPersistedMapMarkers();
+
+  return Array.from(readDirtyMapMarkerIds().values())
+    .map((mapId) => {
+      if (!mapId) {
+        return null;
+      }
+
+      if (mapId === activeMapId.value) {
+        if (isDraftActiveMap.value) {
+          return null;
+        }
+
+        return {
+          mapId,
+          pickups: cloneGeoPoints(pickupMarkerLocations.value),
+          dropoffs: cloneGeoPoints(dropoffMarkerLocations.value)
+        };
+      }
+
+      const markerState = persistedMarkers[mapId] || { pickups: [], dropoffs: [] };
+      return {
+        mapId,
+        pickups: cloneGeoPoints(markerState.pickups),
+        dropoffs: cloneGeoPoints(markerState.dropoffs)
+      };
+    })
+    .filter((payload): payload is MapMarkersSyncPayload => payload !== null);
+}
+
+function refreshPendingMarkerCounts(): void {
+  const markerSyncPayloads = getPendingMarkerSyncPayloads();
+  const pickups = markerSyncPayloads.reduce((total, payload) => total + payload.pickups.length, 0);
+  const dropoffs = markerSyncPayloads.reduce((total, payload) => total + payload.dropoffs.length, 0);
+  const emptyMaps = markerSyncPayloads.reduce(
+    (total, payload) => total + (payload.pickups.length === 0 && payload.dropoffs.length === 0 ? 1 : 0),
+    0
+  );
+
+  pendingMarkerCounts.value = {
+    maps: markerSyncPayloads.length,
+    pickups,
+    dropoffs,
+    emptyMaps,
+    badgeCount: pickups + dropoffs + emptyMaps,
+    total: pickups + dropoffs
+  };
+}
+
+async function refreshMarkersForActiveMap(force = false): Promise<void> {
+  const mapId = activeMapId.value;
+  if (!online.value || !mapId || isDraftActiveMap.value) {
+    return;
   }
 
-  writePersistedMapMarkers(persistedMarkers);
+  if (areMapMarkersDirty(mapId)) {
+    return;
+  }
+
+  if (!force && hasPersistedMapMarkers(mapId)) {
+    return;
+  }
+
+  const markers = await listServerMapMarkers(mapId);
+  if (activeMapId.value !== mapId) {
+    return;
+  }
+
+  withMapMarkerPersistencePaused(() => {
+    setVisibleMapMarkers(markers);
+  });
+  cacheMapMarkersForMap(mapId, markers);
 }
 
 function setActiveMapId(mapId: string | null): void {
@@ -931,6 +1236,68 @@ function setActiveMapId(mapId: string | null): void {
   }
 
   localStorage.removeItem(ACTIVE_MAP_KEY);
+}
+
+function updateLayoutMode(): void {
+  const nextIsMobile = window.innerWidth <= MOBILE_LAYOUT_MAX_WIDTH;
+  isMobileLayout.value = nextIsMobile;
+
+  if (!nextIsMobile) {
+    mobileControlsOpen.value = false;
+  }
+}
+
+function closeMobileControlsIfNeeded(): void {
+  if (isMobileLayout.value) {
+    mobileControlsOpen.value = false;
+  }
+}
+
+function toggleMobileControls(): void {
+  mobileControlsOpen.value = !mobileControlsOpen.value;
+}
+
+function closeMobileControls(): void {
+  mobileControlsOpen.value = false;
+}
+
+function handleMobileHeaderMapChange(event: Event): void {
+  if (!online.value) {
+    return;
+  }
+
+  const target = event.target as HTMLSelectElement;
+  const selectedValue = target.value;
+
+  if (selectedValue === MOBILE_HEADER_CREATE_MAP_VALUE) {
+    startCreateNewMap();
+    return;
+  }
+
+  if (selectedValue === MOBILE_HEADER_CLEAR_CACHE_VALUE) {
+    void clearCurrentCachedMapData();
+    return;
+  }
+
+  if (selectedValue) {
+    void selectMap(selectedValue);
+  }
+}
+
+function getCurrentLocalMapId(): string | null {
+  if (draftMap.value) {
+    return draftMap.value.id;
+  }
+
+  if (activeMapId.value) {
+    return activeMapId.value;
+  }
+
+  return offlineMaps.value[0]?.id ?? null;
+}
+
+function getCurrentLocalMapName(): string {
+  return draftMap.value?.name || activeMap.value?.name || offlineMaps.value[0]?.name || "current cached map";
 }
 
 function setDraftMap(map: MapRecord): void {
@@ -944,16 +1311,21 @@ function clearDraftMap(): void {
 
 function confirmLocalDataResetForNewMap(): boolean {
   return window.confirm(
-    "Loading a new map will clear local browser data (offline map, calibration, tracks, points, and photos). Server data will not be deleted. Continue?"
+    "Loading a new map will clear local browser data (offline map, calibration, tracks, points, photos, comments, routes, and markers). Server data will not be deleted. Continue?"
   );
 }
 
 async function clearLocalBrowserDataForNewMap(): Promise<void> {
+  const localMapIdToClear = getCurrentLocalMapId();
+
   closeMapClickDialog();
   closePhotoDialog();
   closeCommentDialog();
   closeOverlapMarkerDialog();
   clearDraftMap();
+  setActiveMapId(null);
+  offlineMaps.value = [];
+  serverRoutes.value = [];
 
   tracking.value = false;
   activeTrackId.value = null;
@@ -962,17 +1334,41 @@ async function clearLocalBrowserDataForNewMap(): Promise<void> {
   commentLocationMode.value = "current";
   selectedPhotoLocation.value = null;
   selectedCommentLocation.value = null;
-  pickupMarkerLocation.value = null;
-  dropoffMarkerLocation.value = null;
+  withMapMarkerPersistencePaused(() => {
+    setVisibleMapMarkers({ pickups: [], dropoffs: [] });
+  });
   commentText.value = "";
   lastImageClick.value = null;
 
   await clearLocalMapSessionData();
 
+  if (localMapIdToClear) {
+    clearPersistedMapMarkers(localMapIdToClear);
+    clearMapMarkersDirty(localMapIdToClear);
+  }
+
   mapPoints.value = [];
   mapPhotos.value = [];
   mapComments.value = [];
   await Promise.all([refreshOfflineMaps(), refreshPending()]);
+}
+
+async function clearCurrentCachedMapData(): Promise<void> {
+  if (!hasLocalMapData.value) {
+    statusMessage.value = "No cached map is stored locally.";
+    return;
+  }
+
+  const localMapName = getCurrentLocalMapName();
+  const confirmed = window.confirm(
+    `Clear locally cached map "${localMapName}" and all associated local tracks, points, photos, comments, routes, and markers? Server data will not be deleted.`
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  await clearLocalBrowserDataForNewMap();
+  statusMessage.value = `Cleared local cached map: ${localMapName}. Server data was not deleted.`;
 }
 
 async function refreshOfflineMaps(): Promise<void> {
@@ -1019,13 +1415,33 @@ function resetRouteDraft(clearName = false): void {
   }
 }
 
-async function refreshServerRoutesForActiveMap(): Promise<void> {
-  if (!online.value || !activeMapId.value || isDraftActiveMap.value) {
+async function refreshRoutesForActiveMap(): Promise<void> {
+  if (!activeMapId.value || isDraftActiveMap.value) {
     serverRoutes.value = [];
     return;
   }
 
-  serverRoutes.value = await listServerMapRoutes(activeMapId.value);
+  const mapId = activeMapId.value;
+
+  if (!online.value) {
+    serverRoutes.value = await listRoutesByMap(mapId);
+    return;
+  }
+
+  try {
+    const routes = await listServerMapRoutes(mapId);
+    serverRoutes.value = routes;
+    await replaceRoutesForMap(mapId, routes);
+  } catch (error) {
+    const cachedRoutes = await listRoutesByMap(mapId);
+    serverRoutes.value = cachedRoutes;
+
+    if (cachedRoutes.length > 0) {
+      return;
+    }
+
+    throw error;
+  }
 }
 
 function startRouteSelection(): void {
@@ -1036,6 +1452,7 @@ function startRouteSelection(): void {
 
   routeCreateEnabled.value = true;
   routeDraftPoints.value = [];
+  closeMobileControlsIfNeeded();
   statusMessage.value = "Route creation started. Tap the map to add route points.";
 }
 
@@ -1072,7 +1489,7 @@ async function saveRoute(): Promise<void> {
       points: routeDraftPoints.value.map((point) => ({ lat: point.lat, lng: point.lng }))
     });
 
-    await refreshServerRoutesForActiveMap();
+    await refreshRoutesForActiveMap();
     resetRouteDraft(true);
     statusMessage.value = "Route saved to server.";
   } catch (error) {
@@ -1096,7 +1513,7 @@ async function removeRoute(route: ServerRoute): Promise<void> {
   deletingRouteId.value = route.id;
   try {
     await deleteMapRouteFromServer(activeMapId.value, route.id);
-    await refreshServerRoutesForActiveMap();
+    await refreshRoutesForActiveMap();
     statusMessage.value = "Route deleted.";
   } catch (error) {
     statusMessage.value = error instanceof Error ? error.message : "Failed to delete route.";
@@ -1151,25 +1568,32 @@ async function downloadServerMapPhotos(mapId: string): Promise<PhotoRecord[]> {
   return downloaded;
 }
 
-async function loadServerMapAsOffline(mapId: string): Promise<{ photoCount: number; commentCount: number }> {
+async function loadServerMapAsOffline(mapId: string): Promise<{ photoCount: number; commentCount: number; routeCount: number }> {
   const mapSummary = getServerMapSummary(mapId);
   if (!mapSummary) {
     throw new Error("Map not found in server list.");
   }
 
-  const [blob, downloadedPhotos, downloadedComments] = await Promise.all([
+  const [blob, downloadedPhotos, downloadedComments, downloadedRoutes] = await Promise.all([
     fetchServerMapImage(mapId),
     downloadServerMapPhotos(mapId),
-    downloadServerMapComments(mapId)
+    downloadServerMapComments(mapId),
+    listServerMapRoutes(mapId)
   ]);
 
   await cacheMapOffline(mapSummary, blob);
-  await Promise.all([replacePhotosForMap(mapId, downloadedPhotos), replaceCommentsForMap(mapId, downloadedComments)]);
+  await Promise.all([
+    replacePhotosForMap(mapId, downloadedPhotos),
+    replaceCommentsForMap(mapId, downloadedComments),
+    replaceRoutesForMap(mapId, downloadedRoutes)
+  ]);
   await Promise.all([refreshMapData(), refreshPending()]);
+  serverRoutes.value = downloadedRoutes;
 
   return {
     photoCount: downloadedPhotos.length,
-    commentCount: downloadedComments.length
+    commentCount: downloadedComments.length,
+    routeCount: downloadedRoutes.length
   };
 }
 
@@ -1212,6 +1636,7 @@ async function refreshMapData(): Promise<void> {
 
 async function refreshPending(): Promise<void> {
   pendingCounts.value = await getPendingCounts();
+  refreshPendingMarkerCounts();
 }
 
 function defaultMapSelectionWhenCurrentGpsOffMap(): void {
@@ -1249,6 +1674,10 @@ function cloneGeoPoint(point: GeoPoint): GeoPoint {
   };
 }
 
+function cloneGeoPoints(points: GeoPoint[]): GeoPoint[] {
+  return points.map((point) => cloneGeoPoint(point));
+}
+
 function toRadians(value: number): number {
   return (value * Math.PI) / 180;
 }
@@ -1267,12 +1696,41 @@ function distanceMetersBetweenPoints(start: GeoPoint, end: GeoPoint): number {
   return EARTH_RADIUS_METERS * c;
 }
 
+function dedupeGeoPoints(points: GeoPoint[]): GeoPoint[] {
+  const uniquePoints: GeoPoint[] = [];
+
+  points.forEach((point) => {
+    if (uniquePoints.some((existing) => distanceMetersBetweenPoints(existing, point) <= MARKER_MATCH_DISTANCE_METERS)) {
+      return;
+    }
+
+    uniquePoints.push(cloneGeoPoint(point));
+  });
+
+  return uniquePoints;
+}
+
 function markerAtMapClickPoint(marker: GeoPoint | null): boolean {
   if (!marker || !mapClickGeoPoint.value) {
     return false;
   }
 
   return distanceMetersBetweenPoints(marker, mapClickGeoPoint.value) <= MARKER_MATCH_DISTANCE_METERS;
+}
+
+function findMarkerAtMapClickPoint(markers: GeoPoint[]): GeoPoint | null {
+  if (!mapClickGeoPoint.value) {
+    return null;
+  }
+
+  return (
+    markers.find((marker) => distanceMetersBetweenPoints(marker, mapClickGeoPoint.value as GeoPoint) <= MARKER_MATCH_DISTANCE_METERS) ||
+    null
+  );
+}
+
+function removeMarkerFromList(markers: GeoPoint[], markerToRemove: GeoPoint): GeoPoint[] {
+  return markers.filter((marker) => distanceMetersBetweenPoints(marker, markerToRemove) > MARKER_MATCH_DISTANCE_METERS);
 }
 
 function getPhotosNearImagePoint(imagePoint: ImagePoint): PhotoRecord[] {
@@ -1337,16 +1795,16 @@ function toggleDropoffMarker(): void {
     return;
   }
 
-  const hadDropoffMarker = Boolean(dropoffMarkerLocation.value);
+  const selectedDropoffMarker = dropoffMarkerAtSelectedPoint.value;
 
-  if (dropoffMarkerAtSelectedPoint.value) {
-    dropoffMarkerLocation.value = null;
+  if (selectedDropoffMarker) {
+    dropoffMarkerLocations.value = removeMarkerFromList(dropoffMarkerLocations.value, selectedDropoffMarker);
     statusMessage.value = "Drop-off marker removed.";
     return;
   }
 
-  dropoffMarkerLocation.value = cloneGeoPoint(selectedPoint);
-  statusMessage.value = hadDropoffMarker ? "Drop-off marker moved." : "Drop-off marker set.";
+  dropoffMarkerLocations.value = [...dropoffMarkerLocations.value, cloneGeoPoint(selectedPoint)];
+  statusMessage.value = "Drop-off marker added.";
 }
 
 function togglePickupMarker(): void {
@@ -1355,22 +1813,22 @@ function togglePickupMarker(): void {
     return;
   }
 
-  const hadPickupMarker = Boolean(pickupMarkerLocation.value);
+  const selectedPickupMarker = pickupMarkerAtSelectedPoint.value;
 
-  if (pickupMarkerAtSelectedPoint.value) {
-    pickupMarkerLocation.value = null;
+  if (selectedPickupMarker) {
+    pickupMarkerLocations.value = removeMarkerFromList(pickupMarkerLocations.value, selectedPickupMarker);
     statusMessage.value = "Pickup marker removed.";
     return;
   }
 
-  if (dropoffMarkerLocation.value) {
-    pickupMarkerLocation.value = cloneGeoPoint(dropoffMarkerLocation.value);
-    statusMessage.value = "Pickup marker set on drop-off marker.";
+  if (dropoffMarkerAtSelectedPoint.value) {
+    pickupMarkerLocations.value = [...pickupMarkerLocations.value, cloneGeoPoint(dropoffMarkerAtSelectedPoint.value)];
+    statusMessage.value = "Pickup marker added on drop-off marker.";
     return;
   }
 
-  pickupMarkerLocation.value = cloneGeoPoint(selectedPoint);
-  statusMessage.value = hadPickupMarker ? "Pickup marker moved." : "Pickup marker set.";
+  pickupMarkerLocations.value = [...pickupMarkerLocations.value, cloneGeoPoint(selectedPoint)];
+  statusMessage.value = "Pickup marker added.";
 }
 
 function openMapClickPhotoTools(): void {
@@ -1999,6 +2457,11 @@ function handleWindowKeydown(event: KeyboardEvent): void {
     return;
   }
 
+  if (mobileControlsOpen.value) {
+    closeMobileControls();
+    return;
+  }
+
   if (mapClickDialogVisible.value) {
     closeMapClickDialog();
     return;
@@ -2031,6 +2494,7 @@ function setPhotoLocationMode(mode: PhotoLocationMode): void {
     return;
   }
 
+  closeMobileControlsIfNeeded();
   statusMessage.value = "Tap the map to choose photo location.";
 }
 
@@ -2046,6 +2510,7 @@ function setCommentLocationMode(mode: PhotoLocationMode): void {
     return;
   }
 
+  closeMobileControlsIfNeeded();
   statusMessage.value = "Tap the map to choose comment location.";
 }
 
@@ -2071,13 +2536,16 @@ function startCreateNewMap(): void {
   commentLocationMode.value = "current";
   selectedPhotoLocation.value = null;
   selectedCommentLocation.value = null;
-  pickupMarkerLocation.value = null;
-  dropoffMarkerLocation.value = null;
+  pickupMarkerLocations.value = [];
+  dropoffMarkerLocations.value = [];
   commentText.value = "";
   lastImageClick.value = null;
   tracking.value = false;
   activeTrackId.value = null;
   lastRecordedPointMs = 0;
+  if (isMobileLayout.value) {
+    mobileControlsOpen.value = true;
+  }
   statusMessage.value = "Create new map selected. Enter map name, load map file or URL, then calibrate and save.";
 }
 
@@ -2095,10 +2563,14 @@ async function selectMap(mapId: string): Promise<void> {
     }
     clearDraftMap();
     const downloadResult = await loadServerMapAsOffline(mapId);
+    await refreshMarkersForActiveMap(true).catch(() => {
+      // Keep local marker cache if marker refresh fails after map download.
+    });
     const selected = getServerMapSummary(mapId);
+    closeMobileControlsIfNeeded();
     statusMessage.value = selected
-      ? `Loaded offline map: ${selected.name}. Downloaded ${downloadResult.photoCount} photo(s) and ${downloadResult.commentCount} comment(s) from server.`
-      : `Loaded selected map for offline use. Downloaded ${downloadResult.photoCount} photo(s) and ${downloadResult.commentCount} comment(s) from server.`;
+      ? `Loaded offline map: ${selected.name}. Downloaded ${downloadResult.photoCount} photo(s), ${downloadResult.commentCount} comment(s), and ${downloadResult.routeCount} route(s) from server.`
+      : `Loaded selected map for offline use. Downloaded ${downloadResult.photoCount} photo(s), ${downloadResult.commentCount} comment(s), and ${downloadResult.routeCount} route(s) from server.`;
   } catch (error) {
     statusMessage.value = error instanceof Error ? error.message : "Failed to load selected map.";
   }
@@ -2205,7 +2677,7 @@ async function saveCalibration(points: [ControlPoint, ControlPoint, ControlPoint
 
       await cacheMapOffline(saved, draftMap.value.blob);
       await refreshServerMaps();
-      await refreshServerRoutesForActiveMap();
+      await refreshRoutesForActiveMap();
       creatingNewMap.value = false;
       statusMessage.value = "Map and calibration saved to server and offline cache.";
       return;
@@ -2332,22 +2804,28 @@ async function capturePhotos(files: File[]): Promise<void> {
   await refreshPending();
 }
 
-async function addComment(): Promise<void> {
+async function persistCommentEntry(rawCommentText: string): Promise<boolean> {
   if (!activeMapId.value) {
     statusMessage.value = "Map is required before adding comments.";
-    return;
+    return false;
   }
 
-  if (!canSaveComment.value) {
-    statusMessage.value = commentDisabledReason.value;
-    return;
+  const trimmedCommentText = rawCommentText.trim();
+  if (!trimmedCommentText) {
+    statusMessage.value = "Enter a comment before saving.";
+    return false;
+  }
+
+  if (trimmedCommentText.length > 500) {
+    statusMessage.value = "Comment must be 500 characters or fewer.";
+    return false;
   }
 
   let location: GeoPoint | null = null;
   if (commentLocationMode.value === "current") {
     if (!currentPosition.value) {
       statusMessage.value = "Current GPS location is not available.";
-      return;
+      return false;
     }
 
     location = {
@@ -2358,7 +2836,7 @@ async function addComment(): Promise<void> {
   } else {
     if (!selectedCommentLocation.value) {
       statusMessage.value = "Tap the map to choose comment location before saving.";
-      return;
+      return false;
     }
     location = selectedCommentLocation.value;
   }
@@ -2370,7 +2848,7 @@ async function addComment(): Promise<void> {
     lat: location.lat,
     lng: location.lng,
     accuracy: location.accuracy,
-    commentText: commentText.value.trim(),
+    commentText: trimmedCommentText,
     createdAt: new Date().toISOString(),
     syncStatus: "pending",
     lastError: null
@@ -2382,9 +2860,23 @@ async function addComment(): Promise<void> {
     selectedCommentLocation.value = null;
   }
 
-  commentText.value = "";
   statusMessage.value = "Comment saved offline and queued for sync.";
   await Promise.all([refreshMapData(), refreshPending()]);
+  return true;
+}
+
+async function addComment(): Promise<void> {
+  if (!canSaveComment.value) {
+    statusMessage.value = commentDisabledReason.value;
+    return;
+  }
+
+  const saved = await persistCommentEntry(commentText.value);
+  if (!saved) {
+    return;
+  }
+
+  commentText.value = "";
 }
 
 async function syncNow(): Promise<void> {
@@ -2397,7 +2889,9 @@ async function syncNow(): Promise<void> {
   statusMessage.value = "Sync in progress...";
 
   try {
-    const result = await syncPendingRecords(clientId, activeMapId.value);
+    const markerSyncPayloads = getPendingMarkerSyncPayloads();
+
+    const result = await syncPendingRecords(clientId, activeMapId.value, markerSyncPayloads);
     syncSummary.value = `Synced ${result.syncedPoints} point(s), ${result.syncedPhotos} photo(s), ${result.syncedComments} comment(s).`;
     if (result.failedPhotos > 0) {
       syncSummary.value += ` ${result.failedPhotos} photo(s) failed.`;
@@ -2405,8 +2899,18 @@ async function syncNow(): Promise<void> {
     if (result.failedComments > 0) {
       syncSummary.value += ` ${result.failedComments} comment(s) failed.`;
     }
+    if (result.syncedMarkerState) {
+      syncSummary.value +=
+        result.syncedMarkers > 0 ? ` ${result.syncedMarkers} marker(s) synced.` : " Marker changes synced.";
+    }
+    for (const mapId of markerSyncPayloads.map((payload) => payload.mapId)) {
+      clearMapMarkersDirty(mapId);
+    }
     statusMessage.value = "Sync finished.";
     await Promise.all([refreshMapData(), refreshPending()]);
+    await refreshMarkersForActiveMap(true).catch(() => {
+      // Keep local markers if server refresh fails immediately after a successful sync.
+    });
   } catch (error) {
     statusMessage.value = error instanceof Error ? error.message : "Sync failed.";
   } finally {
@@ -2455,7 +2959,7 @@ function setOnlineState(value: boolean): void {
 function handleOnline(): void {
   setOnlineState(true);
   refreshServerMaps()
-    .then(() => Promise.all([syncActiveCalibrationIfNeeded(), refreshServerRoutesForActiveMap()]))
+    .then(() => Promise.all([syncActiveCalibrationIfNeeded(), refreshRoutesForActiveMap(), refreshMarkersForActiveMap(true)]))
     .catch((error) => {
       statusMessage.value = error instanceof Error ? error.message : "Failed to refresh server maps.";
     });
@@ -2467,7 +2971,9 @@ function handleOffline(): void {
   closeMapClickDialog();
   commentLocationMode.value = "current";
   selectedCommentLocation.value = null;
-  serverRoutes.value = [];
+  refreshRoutesForActiveMap().catch(() => {
+    serverRoutes.value = [];
+  });
   defaultMapSelectionWhenCurrentGpsOffMap();
 }
 
@@ -2488,13 +2994,12 @@ watch(activeMapId, () => {
     statusMessage.value = error instanceof Error ? error.message : "Failed to load map data.";
   });
 
-  if (!online.value) {
-    serverRoutes.value = [];
-    return;
-  }
-
-  refreshServerRoutesForActiveMap().catch((error) => {
+  refreshRoutesForActiveMap().catch((error) => {
     statusMessage.value = error instanceof Error ? error.message : "Failed to load routes for selected map.";
+  });
+
+  refreshMarkersForActiveMap(true).catch((error) => {
+    statusMessage.value = error instanceof Error ? error.message : "Failed to load markers for selected map.";
   });
 });
 
@@ -2506,7 +3011,7 @@ watch(
 );
 
 watch(
-  () => [pickupMarkerLocation.value, dropoffMarkerLocation.value],
+  () => [pickupMarkerLocations.value, dropoffMarkerLocations.value],
   () => {
     persistMapMarkersForActiveMap();
   },
@@ -2514,10 +3019,16 @@ watch(
 );
 
 onMounted(async () => {
+  updateLayoutMode();
   await refreshOfflineMaps();
   restoreMapMarkersForMap(activeMapId.value);
   if (online.value) {
-    await Promise.all([refreshServerMaps(), refreshServerRoutesForActiveMap()]);
+    await Promise.all([refreshServerMaps(), refreshRoutesForActiveMap()]);
+    await refreshMarkersForActiveMap(true).catch((error) => {
+      statusMessage.value = error instanceof Error ? error.message : "Failed to load server markers.";
+    });
+  } else {
+    await refreshRoutesForActiveMap();
   }
   await Promise.all([refreshMapData(), refreshPending()]);
 
@@ -2533,9 +3044,11 @@ onMounted(async () => {
   window.addEventListener("online", handleOnline);
   window.addEventListener("offline", handleOffline);
   window.addEventListener("keydown", handleWindowKeydown);
+  window.addEventListener("resize", updateLayoutMode);
 });
 
 onBeforeUnmount(() => {
+  closeMobileControls();
   closeMapClickDialog();
   closePhotoDialog();
   closeCommentDialog();
@@ -2546,10 +3059,114 @@ onBeforeUnmount(() => {
   window.removeEventListener("online", handleOnline);
   window.removeEventListener("offline", handleOffline);
   window.removeEventListener("keydown", handleWindowKeydown);
+  window.removeEventListener("resize", updateLayoutMode);
 });
 </script>
 
 <style scoped>
+.app-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.app-header.mobile-layout {
+  padding: 0.72rem 0.8rem;
+  gap: 0;
+}
+
+.app-header-row.mobile-layout {
+  gap: 0.65rem;
+}
+
+.mobile-header-map-select,
+.mobile-header-map-name {
+  flex: 0 1 min(52vw, 260px);
+  min-width: 0;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.94);
+  color: #153547;
+  padding: 0.54rem 0.75rem;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.mobile-header-map-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-sheet-toggle,
+.mobile-control-close {
+  border: none;
+  border-radius: 10px;
+  font-weight: 700;
+}
+
+.mobile-sheet-toggle {
+  position: fixed;
+  left: 50%;
+  bottom: 0.7rem;
+  transform: translateX(-50%);
+  z-index: 1085;
+  width: 4rem;
+  height: 1.25rem;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(18, 69, 89, 0.18);
+  box-shadow: 0 10px 24px rgba(18, 44, 60, 0.12);
+  padding: 0;
+}
+
+.mobile-sheet-toggle-bar {
+  display: block;
+  width: 1.8rem;
+  height: 0.24rem;
+  margin: 0 auto;
+  border-radius: 999px;
+  background: #5a7482;
+}
+
+.mobile-control-close {
+  background: #124559;
+  color: #ffffff;
+  padding: 0.68rem 0.9rem;
+  white-space: nowrap;
+}
+
+.mobile-control-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1090;
+  background: rgba(10, 23, 31, 0.32);
+}
+
+.mobile-control-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0.8rem;
+}
+
+.mobile-control-heading {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.mobile-control-heading strong {
+  color: #18384a;
+  font-size: 0.98rem;
+}
+
+.mobile-control-heading p {
+  margin: 0;
+  color: #5a7482;
+  font-size: 0.83rem;
+  line-height: 1.35;
+}
+
 .route-panel {
   display: grid;
   gap: 0.55rem;
@@ -2917,6 +3534,39 @@ onBeforeUnmount(() => {
 
 .marker-choice-dialog {
   width: min(460px, 100%);
+}
+
+@media (max-width: 899px) {
+  .app-header {
+    position: sticky;
+    top: 0.55rem;
+    z-index: 16;
+  }
+
+  .app-header-row.mobile-layout h1 {
+    font-size: 1.05rem;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-header-row.mobile-layout {
+    gap: 0.5rem;
+  }
+
+  .mobile-header-map-select,
+  .mobile-header-map-name {
+    flex-basis: min(58vw, 210px);
+    padding: 0.48rem 0.62rem;
+    font-size: 0.82rem;
+  }
+
+  .mobile-control-header {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mobile-control-close {
+    width: 100%;
+  }
 }
 
 .marker-choice-help {

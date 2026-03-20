@@ -48,6 +48,14 @@ interface MapCommentRow extends RowDataPacket {
   created_at: string | Date;
 }
 
+interface MapMarkerRow extends RowDataPacket {
+  map_local_id: string;
+  marker_type: string;
+  latitude: number | string;
+  longitude: number | string;
+  accuracy: number | string;
+}
+
 interface RouteRow extends RowDataPacket {
   local_id: string;
   map_local_id: string;
@@ -94,6 +102,17 @@ interface MapCommentResponse {
   accuracy: number;
   commentText: string;
   createdAt: string;
+}
+
+interface MapMarkerPoint {
+  lat: number;
+  lng: number;
+  accuracy: number;
+}
+
+interface MapMarkersResponse {
+  pickups: MapMarkerPoint[];
+  dropoffs: MapMarkerPoint[];
 }
 
 interface UpdateCommentBody {
@@ -156,6 +175,12 @@ interface IncomingCommentMeta {
   accuracy: number;
   commentText: string;
   createdAt: string;
+}
+
+interface IncomingMapMarkers {
+  mapId: string;
+  pickups: MapMarkerPoint[];
+  dropoffs: MapMarkerPoint[];
 }
 
 interface MapFetchRequestBody {
@@ -256,6 +281,71 @@ function validateRoutePoints(value: unknown): MapRoutePoint[] {
   return points;
 }
 
+function validateMarkerPoints(value: unknown, fieldName: string): MapMarkerPoint[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object") {
+      throw new SyncValidationError(`${fieldName}[${index}] is invalid.`);
+    }
+
+    const point = item as { lat?: unknown; lng?: unknown; accuracy?: unknown };
+    const lat = Number(point.lat);
+    const lng = Number(point.lng);
+    const accuracy = Number(point.accuracy ?? 0);
+
+    if (!Number.isFinite(lat) || lat < -90 || lat > 90) {
+      throw new SyncValidationError(`${fieldName}[${index}].lat must be between -90 and 90.`);
+    }
+
+    if (!Number.isFinite(lng) || lng < -180 || lng > 180) {
+      throw new SyncValidationError(`${fieldName}[${index}].lng must be between -180 and 180.`);
+    }
+
+    if (!Number.isFinite(accuracy) || accuracy < 0) {
+      throw new SyncValidationError(`${fieldName}[${index}].accuracy must be zero or greater.`);
+    }
+
+    return {
+      lat,
+      lng,
+      accuracy
+    };
+  });
+}
+
+function validateIncomingMapMarkers(value: unknown): IncomingMapMarkers[] {
+  if (value === null || value === undefined) {
+    return [];
+  }
+
+  const markerEntries = Array.isArray(value) ? value : [value];
+  return markerEntries.map((entry, index) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new SyncValidationError(`mapMarkers[${index}] must be an object.`);
+    }
+
+    const markerPayload = entry as {
+      mapId?: unknown;
+      pickups?: unknown;
+      dropoffs?: unknown;
+    };
+
+    const mapId = typeof markerPayload.mapId === "string" ? markerPayload.mapId.trim() : "";
+    if (!mapId) {
+      throw new SyncValidationError(`mapMarkers[${index}].mapId is required.`);
+    }
+
+    return {
+      mapId,
+      pickups: validateMarkerPoints(markerPayload.pickups, `mapMarkers[${index}].pickups`),
+      dropoffs: validateMarkerPoints(markerPayload.dropoffs, `mapMarkers[${index}].dropoffs`)
+    };
+  });
+}
+
 function serializeCalibration(value: unknown, fieldName: string): string | null {
   if (value === null || value === undefined) {
     return null;
@@ -333,6 +423,32 @@ function toMapCommentResponse(row: MapCommentRow): MapCommentResponse {
     commentText: row.comment_text,
     createdAt: toIsoString(row.created_at)
   };
+}
+
+function toMapMarkersResponse(rows: MapMarkerRow[]): MapMarkersResponse {
+  const markers: MapMarkersResponse = {
+    pickups: [],
+    dropoffs: []
+  };
+
+  for (const row of rows) {
+    const point: MapMarkerPoint = {
+      lat: Number(row.latitude),
+      lng: Number(row.longitude),
+      accuracy: Number(row.accuracy)
+    };
+
+    if (row.marker_type === "pickup") {
+      markers.pickups.push(point);
+      continue;
+    }
+
+    if (row.marker_type === "dropoff") {
+      markers.dropoffs.push(point);
+    }
+  }
+
+  return markers;
 }
 
 function toMapRouteResponse(row: RouteRow): MapRouteResponse {
@@ -495,6 +611,50 @@ async function loadMapNames(
   return names;
 }
 
+async function replaceMapMarkers(connection: PoolConnection, mapMarkers: IncomingMapMarkers): Promise<void> {
+  const [mapRows] = await connection.query<RowDataPacket[]>(
+    `
+    SELECT local_id
+    FROM maps
+    WHERE local_id = ?
+    LIMIT 1
+    `,
+    [mapMarkers.mapId]
+  );
+
+  if (mapRows.length === 0) {
+    throw new SyncValidationError("mapMarkers.mapId does not reference a saved map.");
+  }
+
+  await connection.execute(
+    `
+    DELETE FROM map_markers
+    WHERE map_local_id = ?
+    `,
+    [mapMarkers.mapId]
+  );
+
+  for (const marker of mapMarkers.pickups) {
+    await connection.execute(
+      `
+      INSERT INTO map_markers (map_local_id, marker_type, latitude, longitude, accuracy)
+      VALUES (?, 'pickup', ?, ?, ?)
+      `,
+      [mapMarkers.mapId, marker.lat, marker.lng, marker.accuracy]
+    );
+  }
+
+  for (const marker of mapMarkers.dropoffs) {
+    await connection.execute(
+      `
+      INSERT INTO map_markers (map_local_id, marker_type, latitude, longitude, accuracy)
+      VALUES (?, 'dropoff', ?, ?, ?)
+      `,
+      [mapMarkers.mapId, marker.lat, marker.lng, marker.accuracy]
+    );
+  }
+}
+
 const syncUpload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -609,6 +769,41 @@ syncRoutes.get("/maps/:mapId/comments", async (request: Request, response: Respo
   );
 
   response.json({ comments: rows.map(toMapCommentResponse) });
+});
+
+syncRoutes.get("/maps/:mapId/markers", async (request: Request, response: Response) => {
+  const mapId = readParam(request.params.mapId);
+  if (!mapId) {
+    response.status(400).json({ message: "Map id is required." });
+    return;
+  }
+
+  const [mapRows] = await pool.query<RowDataPacket[]>(
+    `
+    SELECT local_id
+    FROM maps
+    WHERE local_id = ?
+    LIMIT 1
+    `,
+    [mapId]
+  );
+
+  if (mapRows.length === 0) {
+    response.status(404).json({ message: "Map not found." });
+    return;
+  }
+
+  const [rows] = await pool.query<MapMarkerRow[]>(
+    `
+    SELECT map_local_id, marker_type, latitude, longitude, accuracy
+    FROM map_markers
+    WHERE map_local_id = ?
+    ORDER BY id ASC
+    `,
+    [mapId]
+  );
+
+  response.json({ markers: toMapMarkersResponse(rows) });
 });
 
 syncRoutes.put("/maps/:mapId/comments/:commentId", async (request: Request, response: Response) => {
@@ -1081,9 +1276,11 @@ syncRoutes.post("/sync/batch", syncUpload.array("photos", 100), async (request: 
     request.body.commentsMeta,
     []
   );
+  const mapMarkersRaw = parseJsonField<IncomingMapMarkers[] | IncomingMapMarkers | null>(request.body.mapMarkers, null);
   const points = ensureArray(pointsRaw);
   const photosMeta = ensureArray(photosMetaRaw);
   const commentsMeta = ensureArray(commentsMetaRaw);
+  const mapMarkers = validateIncomingMapMarkers(mapMarkersRaw);
   const files = ((request.files as UploadedPhotoFile[]) || []).slice(0, photosMeta.length);
 
   if (!metadata.batchId || !metadata.clientId) {
@@ -1101,6 +1298,11 @@ syncRoutes.post("/sync/batch", syncUpload.array("photos", 100), async (request: 
     await withTransaction(async (connection) => {
       await upsertBatch(connection, metadata, "processing");
       await ensureTracks(connection, points, photosMeta, commentsMeta);
+
+      for (const markerState of mapMarkers) {
+        await replaceMapMarkers(connection, markerState);
+      }
+
       const mapNames = await loadMapNames(
         connection,
         photosMeta.map((photo) => photo.mapId)
@@ -1222,7 +1424,8 @@ syncRoutes.post("/sync/batch", syncUpload.array("photos", 100), async (request: 
       syncedPhotoIds,
       failedPhotoIds,
       syncedCommentIds,
-      failedCommentIds
+      failedCommentIds,
+      syncedMarkerMapIds: mapMarkers.map((markerState) => markerState.mapId)
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Batch sync failed";

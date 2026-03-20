@@ -75,6 +75,7 @@ select {
 
 .map-section {
   padding: 0.75rem;
+  overflow: hidden;
 }
 
 .control-section {
@@ -115,6 +116,28 @@ select {
   color: #ffffff;
   padding: 0.52rem 0.8rem;
   font-weight: 700;
+}
+
+.sync-button-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  white-space: nowrap;
+}
+
+.sync-pending-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.35rem;
+  height: 1.35rem;
+  padding: 0 0.36rem;
+  border-radius: 999px;
+  background: #ffd36b;
+  color: #153547;
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1;
 }
 
 .sync-state {
@@ -301,15 +324,65 @@ select {
 }
 
 @media (max-width: 899px) {
+  html,
+  body,
+  #app {
+    min-height: 100dvh;
+  }
+
   .app-shell {
     padding: 0.55rem;
+    min-height: 100dvh;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    row-gap: 0.55rem;
   }
 
   .app-main {
-    margin-bottom: 4.5rem;
+    display: block;
+    height: 100%;
+    margin-top: 0;
+    margin-bottom: 0;
+    min-height: 0;
   }
 
-  .control-section {
+  .map-section {
+    height: 100%;
+    min-height: 0;
+    display: grid;
+    align-content: stretch;
+    padding: 0.5rem;
+    border-radius: 18px;
+  }
+
+  .map-section > * {
+    min-height: 0;
+    height: 100%;
+  }
+
+  .control-section.mobile-layout {
+    position: fixed;
+    left: 0.55rem;
+    right: 0.55rem;
+    bottom: 0.55rem;
+    z-index: 1100;
+    max-height: min(76dvh, 680px);
+    overflow: auto;
+    border-radius: 20px 20px 16px 16px;
+    box-shadow: 0 20px 50px rgba(10, 24, 35, 0.28);
+    transform: translateY(calc(100% + 1rem));
+    opacity: 0;
+    pointer-events: none;
+    transition: transform 0.22s ease, opacity 0.22s ease;
+  }
+
+  .control-section.mobile-layout.mobile-open {
+    transform: translateY(0);
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .control-section:not(.mobile-layout) {
     gap: 0.65rem;
   }
 

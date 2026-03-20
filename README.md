@@ -12,6 +12,9 @@ Offline-first web app for field mapping with GPS, photo capture, and online sync
 - Text comments tied to current GPS or map-selected location
 - Queue-based sync to Node/Express API + MySQL
 - Online route creation (name, color, map-selected points)
+- Pickup and drop-off markers persisted to the server on manual sync
+- Mobile map-first layout with title-bar map selector, bottom-sheet tools handle, and on-map sync button
+- Cached route overlays available offline after map download
 - Mobile and large-screen responsive layout
 - Docker image deployment with Docker Compose
 
@@ -76,10 +79,12 @@ Important behavior:
 - The app asks for confirmation before clearing local browser data for a new map load.
 - Existing maps are chosen from the server list while online.
 - Selecting an existing server map also downloads all server photos and photo locations for that map into local browser cache.
+- Selecting an existing server map also downloads that map's routes into the local browser cache for offline display.
 - Route creation is online-only and only available for saved calibrated maps.
 - Route points are selected by tapping the map and are saved to the server with route name and color.
 - Routes can be removed while online from the route list in the Create Route panel.
 - Comments can be added offline at current GPS or map-selected location and are synced in the same queue flow as photos.
+- Pickup and drop-off markers are cached locally per map and, when changed, are pushed to the server the next time you use Sync.
 - Tapping a comment marker opens a popup where comments can be edited or deleted.
 - Editing works offline (queued for sync); deleting comments requires online mode.
 - If photo and comment markers overlap at the tapped location, the app prompts you to choose which marker type to open.
@@ -87,11 +92,21 @@ Important behavior:
 - When an existing server map is selected, create/import controls and calibration details for new-map creation are hidden.
 - Server data is not deleted when local browser data is cleared.
 
+## Mobile Workflow
+1. Go online and choose the server map you want to use in the field.
+2. Wait for the map, photos, comments, and routes to finish downloading into the offline cache.
+3. On mobile, work primarily from the map view.
+4. When online, use the title-bar map selector to switch maps or start creating a new map.
+5. Use the on-map sync button in the lower-right corner when you are back online and want to flush queued changes.
+6. Use the small bottom handle to open the tools sheet for calibration, routes, tracking, photo capture, comments, and other full tool panels.
+7. Close the tools sheet to keep the map as large as possible while selecting points, panning, zooming, and editing markers.
+
 Map endpoints:
 - `GET /api/maps`
 - `GET /api/maps/:mapId/image`
 - `GET /api/maps/:mapId/photos`
 - `GET /api/maps/:mapId/comments`
+- `GET /api/maps/:mapId/markers`
 - `PUT /api/maps/:mapId/comments/:commentId`
 - `DELETE /api/maps/:mapId/comments/:commentId`
 - `GET /api/maps/:mapId/routes`

@@ -8,14 +8,16 @@
 
     <label>
       Server Map
-      <select :value="selectedServerMapValue" @change="onSelectMap" :disabled="!online">
-        <option :value="CREATE_NEW_VALUE">Create new map</option>
-        <option v-for="map in serverMaps" :key="map.id" :value="map.id">{{ map.name }}</option>
+      <select :value="selectedServerMapValue" @change="onSelectMap" :disabled="!online && !canClearLocalMapData">
+        <option value="" disabled>No map selected</option>
+        <option :value="CREATE_NEW_VALUE" :disabled="!online">Create new map</option>
+        <option v-for="map in serverMaps" :key="map.id" :value="map.id" :disabled="!online">{{ map.name }}</option>
+        <option :value="CLEAR_CACHED_MAP_VALUE" :disabled="!canClearLocalMapData">Clear current cached map</option>
       </select>
     </label>
 
     <p class="hint" v-if="online && serverMaps.length === 0">No maps are saved on the server yet.</p>
-    <p class="hint" v-if="!online">Map selection and uploads require internet connection.</p>
+    <p class="hint" v-if="!online">Server map selection and uploads require internet connection. Clearing the current cached map is still available.</p>
 
     <template v-if="creatingNewMap">
       <label>
@@ -48,6 +50,7 @@ import { computed, ref } from "vue";
 import type { ServerMapSummary } from "../types";
 
 const CREATE_NEW_VALUE = "__create_new__";
+const CLEAR_CACHED_MAP_VALUE = "__clear_cached_map__";
 
 const props = defineProps<{
   serverMaps: ServerMapSummary[];
@@ -55,11 +58,13 @@ const props = defineProps<{
   offlineMapName: string | null;
   creatingNewMap: boolean;
   online: boolean;
+  canClearLocalMapData: boolean;
 }>();
 
 const emit = defineEmits<{
   (event: "select-map", mapId: string): void;
   (event: "start-create-map"): void;
+  (event: "clear-cached-map"): void;
   (event: "save-map-file", payload: { name: string; file: File }): void;
   (event: "download-map-url", payload: { name: string; url: string }): void;
 }>();
@@ -82,13 +87,22 @@ const selectedServerMapValue = computed(() => {
 });
 
 function onSelectMap(event: Event): void {
-  if (!props.online) {
+  const target = event.target as HTMLSelectElement;
+  if (target.value === CREATE_NEW_VALUE) {
+    if (!props.online) {
+      return;
+    }
+
+    emit("start-create-map");
     return;
   }
 
-  const target = event.target as HTMLSelectElement;
-  if (target.value === CREATE_NEW_VALUE) {
-    emit("start-create-map");
+  if (target.value === CLEAR_CACHED_MAP_VALUE) {
+    emit("clear-cached-map");
+    return;
+  }
+
+  if (!props.online) {
     return;
   }
 

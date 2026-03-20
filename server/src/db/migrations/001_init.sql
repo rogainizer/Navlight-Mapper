@@ -85,6 +85,18 @@ CREATE TABLE IF NOT EXISTS maps (
   INDEX idx_maps_updated_at (updated_at)
 );
 
+CREATE TABLE IF NOT EXISTS map_markers (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  map_local_id VARCHAR(64) NOT NULL,
+  marker_type ENUM('pickup', 'dropoff') NOT NULL,
+  latitude DECIMAL(10, 7) NOT NULL,
+  longitude DECIMAL(10, 7) NOT NULL,
+  accuracy FLOAT NOT NULL,
+  synced_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_map_markers_map_local_id (map_local_id),
+  INDEX idx_map_markers_map_type (map_local_id, marker_type)
+);
+
 CREATE TABLE IF NOT EXISTS routes (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   local_id VARCHAR(64) NOT NULL,

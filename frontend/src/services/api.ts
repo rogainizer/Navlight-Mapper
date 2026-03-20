@@ -1,6 +1,7 @@
 import type {
   CalibrationModel,
   CommentRecord,
+  MapMarkersState,
   RoutePoint,
   ServerMapSummary,
   ServerRoute
@@ -13,6 +14,7 @@ export interface SyncBatchResponse {
   failedPhotoIds: string[];
   syncedCommentIds: string[];
   failedCommentIds: string[];
+  syncedMarkerMapIds: string[];
 }
 
 interface ApiErrorBody {
@@ -33,6 +35,10 @@ interface ServerMapPhotosResponse {
 
 interface ServerMapCommentsResponse {
   comments: ServerMapComment[];
+}
+
+interface ServerMapMarkersResponse {
+  markers: MapMarkersState;
 }
 
 interface ServerMapCommentSingleResponse {
@@ -184,6 +190,20 @@ export async function listServerMapComments(mapId: string): Promise<ServerMapCom
 
   const data = (await response.json()) as ServerMapCommentsResponse;
   return data.comments || [];
+}
+
+export async function listServerMapMarkers(mapId: string): Promise<MapMarkersState> {
+  const response = await fetch(`${API_BASE_URL}/maps/${encodeURIComponent(mapId)}/markers`, {
+    method: "GET"
+  });
+
+  if (!response.ok) {
+    const message = await readErrorMessage(response, "Failed to load map markers.");
+    throw new Error(message);
+  }
+
+  const data = (await response.json()) as ServerMapMarkersResponse;
+  return data.markers || { pickups: [], dropoffs: [] };
 }
 
 export async function updateMapCommentOnServer(

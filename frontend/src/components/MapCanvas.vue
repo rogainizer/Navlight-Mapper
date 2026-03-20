@@ -25,8 +25,10 @@
       >
         {{ hoverTooltipText }}
       </div>
+    </div>
 
-      <div v-if="mapBlob" class="interaction-controls">
+    <div v-if="mapBlob" class="map-controls-overlay">
+      <div class="interaction-controls">
         <button
           type="button"
           class="mode-button"
@@ -47,7 +49,7 @@
         </button>
       </div>
 
-      <div v-if="mapBlob" class="zoom-controls">
+      <div class="zoom-controls">
         <button
           type="button"
           class="zoom-button"
@@ -76,9 +78,21 @@
           +
         </button>
       </div>
-    </div>
 
-    <p class="map-caption">{{ caption }}</p>
+      <button
+        v-if="showSyncButton"
+        type="button"
+        class="sync-overlay-button"
+        :disabled="syncDisabled"
+        :title="syncTitle"
+        @click="$emit('sync-click')"
+      >
+        <span class="sync-button-content">
+          <span>{{ syncLabel }}</span>
+          <span v-if="syncBadgeLabel" class="sync-pending-badge">{{ syncBadgeLabel }}</span>
+        </span>
+      </button>
+    </div>
   </div>
 </template>
 
@@ -105,14 +119,19 @@ const props = defineProps<{
   currentPosition: LivePosition | null;
   selectedPhotoLocation: GeoPoint | null;
   selectedCommentLocation: GeoPoint | null;
-  pickupMarker: GeoPoint | null;
-  dropoffMarker: GeoPoint | null;
+  pickupMarkers: GeoPoint[];
+  dropoffMarkers: GeoPoint[];
   points: TrackPointRecord[];
   photos: PhotoRecord[];
   comments: CommentRecord[];
   routes: ServerRoute[];
   routeDraftPoints: RoutePoint[];
   routeDraftColor: string;
+  showSyncButton?: boolean;
+  syncDisabled?: boolean;
+  syncLabel?: string;
+  syncTitle?: string;
+  syncBadgeLabel?: string;
 }>();
 
 const emit = defineEmits<{
@@ -120,6 +139,7 @@ const emit = defineEmits<{
   (event: "photo-marker-click", photos: PhotoRecord[]): void;
   (event: "comment-marker-click", comments: CommentRecord[]): void;
   (event: "overlap-marker-click", markers: { photos: PhotoRecord[]; comments: CommentRecord[] }): void;
+  (event: "sync-click"): void;
   (event: "current-position-coverage-change", isOnMap: boolean | null): void;
 }>();
 
@@ -136,7 +156,14 @@ const ROUTE_HOVER_DISTANCE_PX = 8;
 const EARTH_RADIUS_KM = 6371;
 const TOOLTIP_OFFSET_X = 12;
 const TOOLTIP_OFFSET_Y = 14;
+const MOBILE_LAYOUT_MAX_WIDTH = 899;
 type InteractionMode = "select" | "pan";
+type RenderBaseMetrics = {
+  viewportWidth: number;
+  viewportHeight: number;
+  baseWidth: number;
+  baseHeight: number;
+};
 
 const containerRef = ref<HTMLDivElement | null>(null);
 const canvasWrapRef = ref<HTMLDivElement | null>(null);
@@ -146,12 +173,14 @@ const currentObjectUrl = ref<string | null>(null);
 const zoomLevel = ref(1);
 const panX = ref(0);
 const panY = ref(0);
+const hasPanRoom = ref(false);
 const isDragging = ref(false);
 const interactionMode = ref<InteractionMode>("select");
 const hoverTooltipVisible = ref(false);
 const hoverTooltipText = ref("");
 const hoverTooltipX = ref(0);
 const hoverTooltipY = ref(0);
+const dragRenderBaseMetrics = ref<RenderBaseMetrics | null>(null);
 
 const dragState = {
   active: false,
@@ -176,22 +205,7 @@ const drawState = {
 let lastCurrentPositionCoverage: boolean | null = null;
 
 const zoomPercent = computed(() => Math.round(zoomLevel.value * 100));
-const canPan = computed(
-  () => interactionMode.value === "pan" && zoomLevel.value > 1.01 && Boolean(loadedImage.value)
-);
-
-const caption = computed(() => {
-  if (!props.mapBlob) {
-    return "Add a JPEG map to begin.";
-  }
-  if (!props.calibration) {
-    return "Tap the map and complete 3-point calibration to overlay GPS data.";
-  }
-  if (interactionMode.value === "pan") {
-    return "Pan mode: drag the map. Use the mouse wheel to zoom. Switch to Select mode to pick calibration/photo points.";
-  }
-  return "Select mode: tap map for actions, markers, and map locations. Use the mouse wheel to zoom and switch to Pan mode to drag.";
-});
+const canPan = computed(() => interactionMode.value === "pan" && hasPanRoom.value && Boolean(loadedImage.value));
 
 function releaseObjectUrl(): void {
   if (currentObjectUrl.value) {
@@ -218,6 +232,50 @@ function clampPanToLimits(): void {
   }
 }
 
+function isMobileViewport(): boolean {
+  return window.innerWidth <= MOBILE_LAYOUT_MAX_WIDTH;
+}
+
+function computeRenderBaseMetrics(image: HTMLImageElement): RenderBaseMetrics {
+  const measuredWidth = containerRef.value?.clientWidth || canvasWrapRef.value?.clientWidth || 0;
+  const measuredHeight =
+    canvasWrapRef.value?.clientHeight ||
+    containerRef.value?.clientHeight ||
+    containerRef.value?.parentElement?.clientHeight ||
+    0;
+  const imageAspectRatio = image.naturalHeight / image.naturalWidth;
+  const shouldUseMobileHeightFit = isMobileViewport() && measuredHeight > 0;
+  const viewportWidth = measuredWidth > 0 ? measuredWidth : 640;
+  const viewportHeight = shouldUseMobileHeightFit
+    ? measuredHeight
+    : Math.max(1, viewportWidth * imageAspectRatio);
+  const baseHeight = shouldUseMobileHeightFit ? viewportHeight : Math.max(1, viewportWidth * imageAspectRatio);
+  const baseWidth = shouldUseMobileHeightFit ? Math.max(1, baseHeight / imageAspectRatio) : viewportWidth;
+
+  return {
+    viewportWidth,
+    viewportHeight,
+    baseWidth,
+    baseHeight
+  };
+}
+
+function getRenderMetrics(image: HTMLImageElement, zoom: number): {
+  viewportWidth: number;
+  viewportHeight: number;
+  drawWidth: number;
+  drawHeight: number;
+} {
+  const baseMetrics = dragRenderBaseMetrics.value ?? computeRenderBaseMetrics(image);
+
+  return {
+    viewportWidth: baseMetrics.viewportWidth,
+    viewportHeight: baseMetrics.viewportHeight,
+    drawWidth: baseMetrics.baseWidth * zoom,
+    drawHeight: baseMetrics.baseHeight * zoom
+  };
+}
+
 function setZoom(value: number, focusCanvasPoint: ImagePoint | null = null): void {
   const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Number(value.toFixed(2))));
   const image = loadedImage.value;
@@ -232,7 +290,11 @@ function setZoom(value: number, focusCanvasPoint: ImagePoint | null = null): voi
 
   zoomLevel.value = clamped;
 
-  if (zoomLevel.value <= 1) {
+  const renderMetrics = image ? getRenderMetrics(image, zoomLevel.value) : null;
+  const nextPanLimitX = renderMetrics ? Math.max(0, (renderMetrics.drawWidth - renderMetrics.viewportWidth) / 2) : 0;
+  const nextPanLimitY = renderMetrics ? Math.max(0, (renderMetrics.drawHeight - renderMetrics.viewportHeight) / 2) : 0;
+
+  if (zoomLevel.value <= 1 && nextPanLimitX <= 0 && nextPanLimitY <= 0) {
     panX.value = 0;
     panY.value = 0;
     if (interactionMode.value === "pan") {
@@ -243,15 +305,11 @@ function setZoom(value: number, focusCanvasPoint: ImagePoint | null = null): voi
     return;
   }
 
-  if (image && focusCanvasPoint && focusImageX !== null && focusImageY !== null) {
-    const viewportWidth = drawState.width || canvasRef.value?.clientWidth || image.naturalWidth;
-    const viewportHeight = drawState.height || canvasRef.value?.clientHeight || image.naturalHeight;
-    const drawWidth = viewportWidth * zoomLevel.value;
-    const drawHeight = viewportHeight * zoomLevel.value;
-    const baseOffsetX = (viewportWidth - drawWidth) / 2;
-    const baseOffsetY = (viewportHeight - drawHeight) / 2;
-    const scaleX = drawWidth / image.naturalWidth;
-    const scaleY = drawHeight / image.naturalHeight;
+  if (image && renderMetrics && focusCanvasPoint && focusImageX !== null && focusImageY !== null) {
+    const baseOffsetX = (renderMetrics.viewportWidth - renderMetrics.drawWidth) / 2;
+    const baseOffsetY = (renderMetrics.viewportHeight - renderMetrics.drawHeight) / 2;
+    const scaleX = renderMetrics.drawWidth / image.naturalWidth;
+    const scaleY = renderMetrics.drawHeight / image.naturalHeight;
 
     panX.value = focusCanvasPoint.x - baseOffsetX - focusImageX * scaleX;
     panY.value = focusCanvasPoint.y - baseOffsetY - focusImageY * scaleY;
@@ -295,6 +353,14 @@ function onWheelEvent(event: WheelEvent): void {
 
   event.preventDefault();
   event.stopPropagation();
+
+  if (canPan.value && !event.ctrlKey && !event.metaKey) {
+    panX.value = clamp(panX.value - event.deltaX, -drawState.panLimitX, drawState.panLimitX);
+    panY.value = clamp(panY.value - event.deltaY, -drawState.panLimitY, drawState.panLimitY);
+    drawOverlay();
+    return;
+  }
+
   onWheel(event);
 }
 
@@ -302,9 +368,13 @@ function setInteractionMode(mode: InteractionMode): void {
   interactionMode.value = mode;
 
   if (mode === "pan") {
-    if (zoomLevel.value <= 1) {
-      // Entering pan mode at 100% can feel broken, so nudge zoom in slightly.
-      setZoom(1.25);
+    if (!hasPanRoom.value) {
+      if (isMobileViewport()) {
+        drawOverlay();
+      } else {
+        // On larger screens keep the existing behavior so pan mode has room to move immediately.
+        setZoom(1.25);
+      }
     } else {
       drawOverlay();
     }
@@ -436,19 +506,25 @@ function getRouteHoverDescription(canvasPoint: ImagePoint): string | null {
 }
 
 function getHoverMarkerDescription(canvasPoint: ImagePoint): string | null {
-  const pickupPoint = props.pickupMarker ? toCanvasPoint(props.pickupMarker.lat, props.pickupMarker.lng) : null;
-  if (
-    pickupPoint &&
-    isCanvasPointNearMarker(canvasPoint, pickupPoint, ACTION_MARKER_RADIUS + ACTION_MARKER_HIT_PADDING)
-  ) {
+  const isHoveringPickupMarker = props.pickupMarkers.some((marker) => {
+    const pickupPoint = toCanvasPoint(marker.lat, marker.lng);
+    return (
+      pickupPoint !== null &&
+      isCanvasPointNearMarker(canvasPoint, pickupPoint, ACTION_MARKER_RADIUS + ACTION_MARKER_HIT_PADDING)
+    );
+  });
+  if (isHoveringPickupMarker) {
     return "Pickup marker (red cross)";
   }
 
-  const dropoffPoint = props.dropoffMarker ? toCanvasPoint(props.dropoffMarker.lat, props.dropoffMarker.lng) : null;
-  if (
-    dropoffPoint &&
-    isCanvasPointNearMarker(canvasPoint, dropoffPoint, ACTION_MARKER_RADIUS + ACTION_MARKER_HIT_PADDING)
-  ) {
+  const isHoveringDropoffMarker = props.dropoffMarkers.some((marker) => {
+    const dropoffPoint = toCanvasPoint(marker.lat, marker.lng);
+    return (
+      dropoffPoint !== null &&
+      isCanvasPointNearMarker(canvasPoint, dropoffPoint, ACTION_MARKER_RADIUS + ACTION_MARKER_HIT_PADDING)
+    );
+  });
+  if (isHoveringDropoffMarker) {
     return "Drop-off marker (green tick)";
   }
 
@@ -785,6 +861,7 @@ function getCommentsNearCanvasPoint(canvasPoint: ImagePoint): CommentRecord[] {
 }
 
 function finishDrag(): void {
+  const hadStableDragMetrics = dragRenderBaseMetrics.value !== null;
   const canvas = canvasRef.value;
   if (canvas && dragState.pointerId >= 0 && canvas.hasPointerCapture(dragState.pointerId)) {
     canvas.releasePointerCapture(dragState.pointerId);
@@ -793,6 +870,11 @@ function finishDrag(): void {
   dragState.active = false;
   dragState.pointerId = -1;
   isDragging.value = false;
+  dragRenderBaseMetrics.value = null;
+
+  if (hadStableDragMetrics) {
+    drawOverlay();
+  }
 }
 
 function getCurrentPositionCoverage(): boolean | null {
@@ -828,7 +910,31 @@ function drawOverlay(): void {
 
   const canvas = canvasRef.value;
   const image = loadedImage.value;
-  if (!canvas || !image) {
+  if (!canvas) {
+    return;
+  }
+
+  if (!image) {
+    const context = canvas.getContext("2d");
+    if (context) {
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    canvas.width = 0;
+    canvas.height = 0;
+    canvas.style.width = "0px";
+    canvas.style.height = "0px";
+    hasPanRoom.value = false;
+    hideHoverTooltip();
+    drawState.panLimitX = 0;
+    drawState.panLimitY = 0;
+    drawState.width = 0;
+    drawState.height = 0;
+    drawState.offsetX = 0;
+    drawState.offsetY = 0;
+    drawState.scaleX = 1;
+    drawState.scaleY = 1;
     return;
   }
 
@@ -837,10 +943,9 @@ function drawOverlay(): void {
     return;
   }
 
-  const containerWidth = containerRef.value?.clientWidth || 640;
-  const imageAspectRatio = image.naturalHeight / image.naturalWidth;
-  const renderWidth = Math.max(320, containerWidth);
-  const renderHeight = Math.max(220, renderWidth * imageAspectRatio);
+  const renderMetrics = getRenderMetrics(image, zoomLevel.value);
+  const renderWidth = renderMetrics.viewportWidth;
+  const renderHeight = renderMetrics.viewportHeight;
 
   const pixelRatio = window.devicePixelRatio || 1;
   canvas.width = Math.round(renderWidth * pixelRatio);
@@ -851,13 +956,14 @@ function drawOverlay(): void {
   context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
   context.clearRect(0, 0, renderWidth, renderHeight);
 
-  const drawWidth = renderWidth * zoomLevel.value;
-  const drawHeight = renderHeight * zoomLevel.value;
+  const drawWidth = renderMetrics.drawWidth;
+  const drawHeight = renderMetrics.drawHeight;
   const baseOffsetX = (renderWidth - drawWidth) / 2;
   const baseOffsetY = (renderHeight - drawHeight) / 2;
 
   drawState.panLimitX = Math.max(0, (drawWidth - renderWidth) / 2);
   drawState.panLimitY = Math.max(0, (drawHeight - renderHeight) / 2);
+  hasPanRoom.value = drawState.panLimitX > 0.5 || drawState.panLimitY > 0.5;
   clampPanToLimits();
 
   const offsetX = baseOffsetX + panX.value;
@@ -1010,19 +1116,19 @@ function drawOverlay(): void {
     drawCommentMarker(context, point);
   });
 
-  if (props.dropoffMarker) {
-    const dropoffPoint = toCanvasPoint(props.dropoffMarker.lat, props.dropoffMarker.lng);
+  props.dropoffMarkers.forEach((marker) => {
+    const dropoffPoint = toCanvasPoint(marker.lat, marker.lng);
     if (dropoffPoint) {
       drawDropoffMarker(context, dropoffPoint);
     }
-  }
+  });
 
-  if (props.pickupMarker) {
-    const pickupPoint = toCanvasPoint(props.pickupMarker.lat, props.pickupMarker.lng);
+  props.pickupMarkers.forEach((marker) => {
+    const pickupPoint = toCanvasPoint(marker.lat, marker.lng);
     if (pickupPoint) {
       drawPickupMarker(context, pickupPoint);
     }
-  }
+  });
 
   if (interactionMode.value === "select" && props.selectedCommentLocation) {
     const selectedPoint = toCanvasPoint(props.selectedCommentLocation.lat, props.selectedCommentLocation.lng);
@@ -1134,6 +1240,7 @@ function onPointerDown(event: PointerEvent): void {
   dragState.startClientY = event.clientY;
   dragState.startPanX = panX.value;
   dragState.startPanY = panY.value;
+  dragRenderBaseMetrics.value = computeRenderBaseMetrics(loadedImage.value);
 
   canvasRef.value.setPointerCapture(event.pointerId);
   isDragging.value = true;
@@ -1196,8 +1303,8 @@ watch(
     props.currentPosition,
     props.selectedPhotoLocation,
     props.selectedCommentLocation,
-    props.pickupMarker,
-    props.dropoffMarker,
+    props.pickupMarkers,
+    props.dropoffMarkers,
     props.points,
     props.photos,
     props.comments,
@@ -1235,11 +1342,18 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .map-canvas-shell {
+  position: relative;
   width: 100%;
+  min-height: 0;
+  height: 100%;
 }
 
 .map-canvas-wrap {
   position: relative;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  overscroll-behavior: contain;
 }
 
 .map-canvas {
@@ -1263,12 +1377,20 @@ onBeforeUnmount(() => {
   cursor: crosshair;
 }
 
+.map-controls-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+}
+
 .interaction-controls {
   position: absolute;
   top: 0.65rem;
   left: 0.65rem;
   display: flex;
   gap: 0.35rem;
+  pointer-events: auto;
 }
 
 .mode-button {
@@ -1299,6 +1421,7 @@ onBeforeUnmount(() => {
   right: 0.65rem;
   display: flex;
   gap: 0.35rem;
+  pointer-events: auto;
 }
 
 .zoom-button {
@@ -1337,9 +1460,37 @@ onBeforeUnmount(() => {
   transform: translate3d(0, 0, 0);
 }
 
-.map-caption {
-  margin-top: 0.4rem;
-  color: #415a68;
-  font-size: 0.92rem;
+.sync-overlay-button {
+  position: absolute;
+  right: 0.65rem;
+  bottom: 0.65rem;
+  z-index: 7;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 999px;
+  background: rgba(18, 69, 89, 0.96);
+  color: #ffffff;
+  min-height: 2.5rem;
+  padding: 0.58rem 0.95rem;
+  font-weight: 800;
+  box-shadow: 0 10px 24px rgba(10, 24, 35, 0.22);
+  pointer-events: auto;
+}
+
+.sync-overlay-button:disabled {
+  opacity: 0.55;
+}
+
+@media (max-width: 899px) {
+  .map-canvas-wrap {
+    max-height: 100%;
+    border-radius: 14px;
+  }
+
+  .map-controls-overlay {
+    z-index: 8;
+  }
 }
 </style>
